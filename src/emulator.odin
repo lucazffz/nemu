@@ -1,50 +1,695 @@
 package nemu
+// @note small note, white space before package declaration make ols flip
+// the hell out, yes it took days to realize...
 
 import "base:runtime"
+import "core:math"
+import "utils"
+
 
 Console :: struct {
-	cpu: CPU,
-	ppu: PPU,
-	apu: APU,
+	cpu:    CPU,
+	ppu:    PPU,
+	apu:    APU,
+	// 2 KB of internal ram ($0000 - $07FF)
+	ram:    []u8,
+	cycles: int,
+	stalls: int,
 }
 
-// NF - Negative Flag          : 1 when result is negative
-// VF - Overflow Flag          : 1 on signed overflow
-// BF - Break Flag             : 1 when pushed by inst (BRK/PHP) and 0 when popped by irq (NMI/IRQ)
-// DF - Decmial Mode Flag      : 1 when CPU is in Decimal Mode
-// IF - Interrupt Disable Flag : when 1, no interrupt will occur (except BRK and NMI)
-// ZF - Zero Flag              : 1 when all bits of a result is 0
-// CF - Carry Flag             : 1 on unsigned overflow
-//
-// Notes:
-// - The BF bit does not actually exist inside the 6502.
-//   The BF bit only exists in the status flag byte pushed to the stack.
-//   When the flags are restored (via PLP or RTI), the BF bit is discarded. 
-// - PHP (Push Processor Status) and PLP (Pull Processor Status) can be used to set or retrieve P directly via the stack. 
-// - Interrupts (BRK / NMI / IRQ) implicitly push P to the stack.
-//   Interrupts returning with RTI will implicitly pull P from the stack. 
-// - The effect of toggling the IF flag is delayed by 1 instruction when caused by SEI, CLI, or PLP.
+// NF - Negative Flag         : 1 when result is negative
+// VF - Overflow Flag         : 1 on signed overflow
+// BF - Break Flag            : 1 when pushed by inst (BRK/PHP) and 0 when popped by irq (NMI/IRQ)
+// DF - Decmial Mode Flag     : 1 when CPU is in Decimal Mode
+// IF - Interrupt Disable Flag: when 1, no interrupt will occur (except BRK and NMI)
+// ZF - Zero Flag             : 1 when all bits of a result is 0
+// CF - Carry Flag            : 1 on unsigned overflow
 Processor_Status_Flags :: enum {
-	NF,
-	VF,
-	BF,
-	DF,
-	IF,
-	ZF,
-	CF,
+	CF, // bit 0
+	ZF, // bit 1
+	IF, // bit 2
+	DF, // bit 3
+	BF, // bit 4
+	_5, // bit 5 (unused, always 1)
+	VF, // bit 6
+	NF, // bit 7
 }
+
+Instruction_Type :: enum {
+	// alu instructions
+	BIT  = 0, // Bit Test
+	AND  = 1, // Logical AND
+	EOR  = 2, // Exclusive OR
+	ORA  = 3, // Logical Inclusive OR
+	ADC  = 4, // Add with Carry
+	SBC  = 5, // Subtract with Carry
+	CMP  = 6, // Compare Accumulator
+	CPX  = 7, // Compare X Register
+	CPY  = 8, // Compare Y Register
+	ASL  = 9, // Arithmetic Shift Left
+	LSR  = 10, // Logical Shift Right
+	ROL  = 11, // Rotate Left
+	ROR  = 12, // Rotate Right
+	DEC  = 13, // Decrement Memory
+	INC  = 14, // Increment Memory
+	DEX  = 15, // Decrement X Register
+	DEY  = 16, // Decrement Y Register
+	INX  = 17, // Increment X Register
+	INY  = 18, // Increment Y Register
+
+	// move instrucitons
+	LDA  = 19, // Load Accumulator
+	LDX  = 20, // Load X Register
+	LDY  = 21, // Load Y Register
+	STA  = 22, // Store Accumulator
+	STX  = 23, // Store X Register
+	STY  = 24, // Store Y Register
+	TAX  = 25, // Transfer Accumulator to X
+	TXA  = 26, // Transfer X to Accumulator
+	TAY  = 27, // Transfer Accumulator to Y
+	TYA  = 28, // Transfer Y to Accumulator
+	TSX  = 29, // Transfer Stack Pointer to X
+	TXS  = 30, // Transfer X to Stack Pointer
+	PLP  = 31, // Pull Processor Status from Stack
+	PLA  = 32, // Pull Accumulator from Stack
+	PHP  = 33, // Push Processor Status on Stack
+	PHA  = 34, // Push Accumulator on Stack
+
+	// jump and flag instructions
+	JMP  = 35, // Jump
+	JSR  = 36, // Jump to Subroutine
+	RTS  = 37, // Return from Subroutine
+	RTI  = 38, // Return from Interrupt
+	BRK  = 39, // Force Interrupt
+	SEI  = 40, // Set Interrupt Disable
+	CLI  = 41, // Clear Interrupt Disable
+	SEC  = 42, // Set Carry Flag
+	CLC  = 43, // Clear Carry Flag
+	SED  = 44, // Set Decimal Mode
+	CLD  = 45, // Clear Decimal Mode
+	CLV  = 46, // Clear Overflow Flag
+	NOP  = 47, // No Operation
+	BPL  = 48, // Branch if Plus (Negative Clear)
+	BMI  = 49, // Branch if Minus (Negative Set)
+	BVC  = 50, // Branch if Overflow Clear
+	BVS  = 51, // Branch if Overflow Set
+	BCC  = 52, // Branch if Carry Clear
+	BCS  = 53, // Branch if Carry Set
+	BNE  = 54, // Branch if Not Equal (Zero Clear)
+	BEQ  = 55, // Branch if Equal (Zero Set)
+
+	// illegal instrucitons
+	DCP  = 56, // DEC + CMP
+	ISC  = 57, // INC + SBC
+	RLA  = 58, // ROL + AND
+	RRA  = 59, // ROR + ADC
+	SLO  = 60, // ASL + ORA
+	SRE  = 61, // LSR + EOR
+	LAX  = 62, // LDA + LDX
+	SAX  = 63, // Store A&X
+	LAS  = 64, // LAX + TSX
+	TAS  = 65, // (Unstable) Store A&X in S
+	SHA  = 66, // (Unstable) Store A&X&(HighAddr+1)
+	SHX  = 67, // (Unstable) Store X&(HighAddr+1)
+	SHY  = 68, // (Unstable) Store Y&(HighAddr+1)
+	ANE  = 69, // (Unstable) AND X + AND immediate
+	LXA  = 70, // (Unstable) Store immediate in A and X
+	ALR  = 71, // AND immediate + LSR
+	ARR  = 72, // AND immediate + ROR
+	ANC  = 73, // AND immediate, sets C as N
+	ANC2 = 74, // Same as ANC
+	SBX  = 75, // CMP + DEX
+	USBC = 76, // SBC + NOP
+	JAM  = 77, // Halt CPU
+}
+
+
+Instruction_Addressing_Mode :: enum {
+	Implied             = 0, // Instruction requires no operand from memory
+	Accumulator         = 1, // Instruction operates on the accumulator register
+	Immediate           = 2, // Operand is the byte immediately after the opcode
+	Zeropage            = 3, // Operand is an 8-bit address in the zero page ($00xx)
+	Zeropage_X          = 4, // Operand is an 8-bit address in zero page, offset by X
+	Zeropage_Y          = 5, // Operand is an 8-bit address in zero page, offset by Y
+	Relative            = 6, // Operand is a signed 8-bit offset from the program counter
+	Absolute            = 7, // Operand is a full 16-bit memory address
+	Absolute_X          = 8, // Operand is a 16-bit address, offset by X
+	Absolute_Y          = 9, // Operand is a 16-bit address, offset by Y
+	Indirect            = 10, // Operand is a 16-bit address that points to the target address (JMP only)
+	Zeropage_Indirect_X = 11, // (Indirect,X) Operand is from an address calculated using a zero-page address and X
+	Zeropage_Indirect_Y = 12, // (Indirect),Y Operand is from an address calculated using a zero-page pointer and Y
+}
+
+Instruction_Category :: enum {
+	Legal,
+	Illegal,
+	Unstable,
+}
+
+
+Instruction :: struct {
+	type:                       Instruction_Type,
+	addressing_mode:            Instruction_Addressing_Mode,
+	byte_size:                  int,
+	cycle_count:                int,
+	page_boundary_extra_cycles: int,
+	category:                   Instruction_Category,
+}
+
+get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
+	return {
+		type = Instruction_Type(instruction_type[opcode]),
+		addressing_mode = Instruction_Addressing_Mode(instruction_addressing_mode[opcode]),
+		byte_size = instruction_byte_size[opcode],
+		cycle_count = instruction_cycle_count[opcode],
+		page_boundary_extra_cycles = instruction_page_boundary_extra_cycles[opcode],
+		category = Instruction_Category(instruction_category[opcode]),
+	}
+}
+
+Instruction_Error :: enum {
+	None,
+	Illegal,
+	Memory_Access_Error,
+}
+
+// instruction will be nil unless new instruction is fetched
+@(require_results)
+console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error: Memory_Error) {
+	// emulate the fact that instructions take some amount of cycles to complete
+	if console.stalls > 0 {
+		console.stalls -= 1
+		console.cycles += 1
+		return
+	}
+
+	operand_addr: u16
+	page_crossed: bool
+	pc_incremented := false
+	start_pc := console.cpu.pc
+
+	opcode := console_mem_read_from_address(console, start_pc) or_return
+	instruction = get_instruction_from_opcode(opcode)
+
+	console.stalls = instruction.cycle_count - 1
+	console.cycles += 1
+
+
+	// pre-calculate address for modes that need it
+	#partial switch instruction.addressing_mode {
+	case .Immediate, .Accumulator, .Implied, .Relative:
+	// no address to fetch
+	case:
+		operand_addr, page_crossed = get_operand_address(
+			console,
+			instruction.addressing_mode,
+		) or_return
+		if page_crossed {
+			console.stalls += instruction.page_boundary_extra_cycles
+		}
+	}
+
+
+	#partial switch instruction.type {
+	// === Arithmetic and Logical ===
+	case .ADC:
+		console.cpu.status -= {.CF, .VF}
+		val := console_mem_read_from_address(console, operand_addr) or_return
+		a := console.cpu.acc
+		c := .CF in console.cpu.status
+		if a + val == 0xff && c do console.cpu.status += {.CF}
+		result := a + val + u8(c)
+		signed_overflow := signed_overflow(a, val, result)
+		if signed_overflow do console.cpu.status += {.VF}
+		console.cpu.acc = result
+		cpu_set_zn(console, console.cpu.acc)
+	case .SBC, .USBC:
+	// val := console_mem_read_from_address(console, addr)
+	// a := console.cpu.acc
+	// c: u16 = 0; if console.cpu.status[.CF] {c=1}
+	// temp: u16 = u16(a) - u16(val) - (1-c)
+	// console.cpu.status[.CF] = temp < 0x100
+	// console.cpu.status[.VF] = ((u16(a) ^ temp) & (u16(^val) ^ temp) & 0x80) != 0
+	// console.cpu.acc = u8(temp)
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+	case .AND:
+		val := console_mem_read_from_address(console, operand_addr) or_return
+		console.cpu.acc &= val
+		cpu_set_zn(console, console.cpu.acc)
+	case .ORA:
+	// val := console_mem_read_from_address(console, addr)
+	// console.cpu.acc |= val
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+	case .EOR:
+	// val := console_mem_read_from_address(console, addr)
+	// console.cpu.acc = console.cpu.acc ~ val
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+
+	// === Compare ===
+	case .CMP:
+	// val := console_mem_read_from_address(console, addr)
+	// temp := console.cpu.acc - val
+	// console.cpu.status[.CF] = console.cpu.acc >= val
+	// cpu_set_zn(&console.cpu, temp)
+	case .CPX:
+	// val := console_mem_read_from_address(console, addr)
+	// temp := console.cpu.x - val
+	// console.cpu.status[.CF] = console.cpu.x >= val
+	// cpu_set_zn(&console.cpu, temp)
+	case .CPY:
+	// val := console_mem_read_from_address(console, addr)
+	// temp := console.cpu.y - val
+	// console.cpu.status[.CF] = console.cpu.y >= val
+	// cpu_set_zn(&console.cpu, temp)
+
+	// === Bit Test ===
+	case .BIT:
+	// val := console_mem_read_from_address(console, addr)
+	// console.cpu.status[.ZF] = (console.cpu.acc & val) == 0
+	// console.cpu.status[.NF] = (val & 0x80) != 0
+	// console.cpu.status[.VF] = (val & 0x40) != 0
+
+	// === Load/Store ===
+	case .LDA:
+	// console.cpu.acc = console_mem_read_from_address(console, addr)
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+	case .LDX:
+	// console.cpu.x = console_mem_read_from_address(console, addr)
+	// cpu_set_zn(&console.cpu, console.cpu.x)
+	case .LDY:
+	// console.cpu.y = console_mem_read_from_address(console, addr)
+	// cpu_set_zn(&console.cpu, console.cpu.y)
+	case .STA:
+	// console_mem_write_to_address(console, addr, console.cpu.acc)
+	case .STX:
+	// console_mem_write_to_address(console, addr, console.cpu.x)
+	case .STY:
+	// console_mem_write_to_address(console, addr, console.cpu.y)
+
+	// === Increment/Decrement ===
+	case .INC:
+	// val := console_mem_read_from_address(console, addr) + 1
+	// console_mem_write_to_address(console, addr, val)
+	// cpu_set_zn(&console.cpu, val)
+	case .DEC:
+	// val := console_mem_read_from_address(console, addr) - 1
+	// console_mem_write_to_address(console, addr, val)
+	// cpu_set_zn(&console.cpu, val)
+	case .INX:
+	// console.cpu.x += 1
+	// cpu_set_zn(&console.cpu, console.cpu.x)
+	case .INY:
+	// console.cpu.y += 1
+	// cpu_set_zn(&console.cpu, console.cpu.y)
+	case .DEX:
+	// console.cpu.x -= 1
+	// cpu_set_zn(&console.cpu, console.cpu.x)
+	case .DEY:
+	// console.cpu.y -= 1
+	// cpu_set_zn(&console.cpu, console.cpu.y)
+
+	// === Shifts and Rotates ===
+	case .ASL:
+	// var val: u8
+	// if instruction.addressing_mode == .Accumulator {
+	// 	val = console.cpu.acc
+	// 	console.cpu.status[.CF] = (val & 0x80) != 0
+	// 	console.cpu.acc = val << 1
+	// 	cpu_set_zn(&console.cpu, console.cpu.acc)
+	// } else {
+	// 	val = console_mem_read_from_address(console, addr)
+	// 	console.cpu.status[.CF] = (val & 0x80) != 0
+	// 	val <<= 1
+	// 	console_mem_write_to_address(console, addr, val)
+	// 	cpu_set_zn(&console.cpu, val)
+	// }
+	case .LSR:
+	// var val: u8
+	// if instruction.addressing_mode == .Accumulator {
+	// 	val = console.cpu.acc
+	// 	console.cpu.status[.CF] = (val & 0x01) != 0
+	// 	console.cpu.acc = val >> 1
+	// 	cpu_set_zn(&console.cpu, console.cpu.acc)
+	// } else {
+	// 	val = console_mem_read_from_address(console, addr)
+	// 	console.cpu.status[.CF] = (val & 0x01) != 0
+	// 	val >>= 1
+	// 	console_mem_write_to_address(console, addr, val)
+	// 	cpu_set_zn(&console.cpu, val)
+	// }
+	case .ROL:
+	// c: u8 = 0; if console.cpu.status[.CF] {c=1}
+	// var val: u8
+	// if instruction.addressing_mode == .Accumulator {
+	// 	val = console.cpu.acc
+	// 	console.cpu.status[.CF] = (val & 0x80) != 0
+	// 	console.cpu.acc = (val << 1) | c
+	// 	cpu_set_zn(&console.cpu, console.cpu.acc)
+	// } else {
+	// 	val = console_mem_read_from_address(console, addr)
+	// 	console.cpu.status[.CF] = (val & 0x80) != 0
+	// 	val = (val << 1) | c
+	// 	console_mem_write_to_address(console, addr, val)
+	// 	cpu_set_zn(&console.cpu, val)
+	// }
+	case .ROR:
+	// c: u8 = 0; if console.cpu.status[.CF] {c=128}
+	// var val: u8
+	// if instruction.addressing_mode == .Accumulator {
+	// 	val = console.cpu.acc
+	// 	console.cpu.status[.CF] = (val & 0x01) != 0
+	// 	console.cpu.acc = (val >> 1) | c
+	// 	cpu_set_zn(&console.cpu, console.cpu.acc)
+	// } else {
+	// 	val = console_mem_read_from_address(console, addr)
+	// 	console.cpu.status[.CF] = (val & 0x01) != 0
+	// 	val = (val >> 1) | c
+	// 	console_mem_write_to_address(console, addr, val)
+	// 	cpu_set_zn(&console.cpu, val)
+	// }
+
+	// === Program Flow Control ===
+	case .JMP:
+	// console.cpu.pc = addr
+	// pc_incremented = true
+	case .JSR:
+	// pc_to_push := start_pc + 2
+	// cpu_push(console, u8(pc_to_push >> 8))
+	// cpu_push(console, u8(pc_to_push))
+	// console.cpu.pc = addr
+	// pc_incremented = true
+	case .RTS:
+	// lo := u16(cpu_pull(console))
+	// hi := u16(cpu_pull(console))
+	// console.cpu.pc = ((hi << 8) | lo) + 1
+	// pc_incremented = true
+	case .RTI:
+		// status_byte := cpu_pull(console)
+		// for flag in Processor_Status_Flags {
+		// 	// BF and _5 flags are not restored from stack
+		// 	if flag != .BF && flag != ._5 {
+		// 		console.cpu.status[flag] = (status_byte & (1 << int(flag))) != 0
+		// 	}
+		// }
+		// lo := u16(cpu_pull(console))
+		// hi := u16(cpu_pull(console))
+		// console.cpu.pc = (hi << 8) | lo
+		// pc_incremented = true
+
+		// === Branches ===
+		// case .BCC: branch(console, !console.cpu.status[.CF])
+		// case .BCS: branch(console, console.cpu.status[.CF])
+		// case .BEQ: branch(console, console.cpu.status[.ZF])
+		// case .BNE: branch(console, !console.cpu.status[.ZF])
+		// case .BMI: branch(console, console.cpu.status[.NF])
+		// case .BPL: branch(console, !console.cpu.status[.NF])
+		// case .BVC: branch(console, !console.cpu.status[.VF])
+		// case .BVS: branch(console, console.cpu.status[.VF])
+		// case .BCC, .BCS, .BEQ, .BNE, .BMI, .BPL, .BVC, .BVS:
+		pc_incremented = true
+
+	// === Register Transfers ===
+	case .TAX:
+		console.cpu.x = console.cpu.acc;cpu_set_zn(console, console.cpu.x)
+	case .TAY:
+		console.cpu.y = console.cpu.acc;cpu_set_zn(console, console.cpu.y)
+	case .TXA:
+		console.cpu.acc = console.cpu.x;cpu_set_zn(console, console.cpu.acc)
+	case .TYA:
+		console.cpu.acc = console.cpu.y;cpu_set_zn(console, console.cpu.acc)
+	case .TSX:
+		console.cpu.x = console.cpu.sp;cpu_set_zn(console, console.cpu.x)
+	case .TXS:
+		console.cpu.sp = console.cpu.x
+
+	// === Stack Operations ===
+	// case .PHA: cpu_push(console, console.cpu.acc)
+	case .PHP:
+	// When pushed, BF and _5 are set
+	// status_byte := u8(console.cpu.status) | (1 << u8(Processor_Status_Flags.BF)) | (1 << u8(Processor_Status_Flags._5))
+	// cpu_push(console, status_byte)
+	case .PLA:
+	// console.cpu.acc = cpu_pull(console)
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+	case .PLP:
+	// status_byte := cpu_pull(console)
+	// for flag in Processor_Status_Flags {
+	// 	if flag != .BF && flag != ._5 {
+	// 		console.cpu.status[flag] = (status_byte & (1 << int(flag))) != 0
+	// 	}
+	// }
+
+	// === Flag Set/Clear ===
+	case .CLC:
+		console.cpu.status -= {.CF}
+	case .CLD:
+		console.cpu.status -= {.DF}
+	case .CLI:
+		console.cpu.status -= {.IF}
+	case .CLV:
+		console.cpu.status -= {.VF}
+	case .SEC:
+		console.cpu.status += {.CF}
+	case .SED:
+		console.cpu.status += {.DF}
+	case .SEI:
+		console.cpu.status += {.IF}
+
+	// === System and NOP ===
+	case .BRK:
+	// pc_to_push := start_pc + 2
+	// cpu_push(console, u8(pc_to_push >> 8))
+	// cpu_push(console, u8(pc_to_push))
+	// // BRK sets the B flag when pushing status to stack
+	// status_byte := u8(console.cpu.status) | (1 << u8(Processor_Status_Flags.BF))
+	// cpu_push(console, status_byte)
+	// console.cpu.status[.IF] = true
+	// lo := u16(console_mem_read_from_address(console, 0xFFFE))
+	// hi := u16(console_mem_read_from_address(console, 0xFFFF))
+	// console.cpu.pc = (hi << 8) | lo
+	// pc_incremented = true
+	case .NOP:
+	// Does nothing.
+
+	// === Illegal Opcodes ===
+	// For now, most illegal opcodes will act as NOPs.
+	// A full implementation requires emulating their specific, often quirky, behavior.
+	case .LAX:
+	// val := console_mem_read_from_address(console, addr)
+	// console.cpu.acc = val
+	// console.cpu.x = val
+	// cpu_set_zn(&console.cpu, val)
+	case .SAX:
+	// val := console.cpu.acc & console.cpu.x
+	// console_mem_write_to_address(console, addr, val)
+	case .DCP:
+	// val := console_mem_read_from_address(console, addr) - 1
+	// console_mem_write_to_address(console, addr, val)
+	// temp := console.cpu.acc - val
+	// console.cpu.status[.CF] = console.cpu.acc >= val
+	// cpu_set_zn(&console.cpu, temp)
+	case .ISC:
+	// val := console_mem_read_from_address(console, addr) + 1
+	// console_mem_write_to_address(console, addr, val)
+	// a := console.cpu.acc
+	// c: u16 = 0; if console.cpu.status[.CF] {c=1}
+	// temp: u16 = u16(a) - u16(val) - (1-c)
+	// console.cpu.status[.CF] = temp < 0x100
+	// console.cpu.status[.VF] = ((u16(a) ^ temp) & (u16(^val) ^ temp) & 0x80) != 0
+	// console.cpu.acc = u8(temp)
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+	case .SLO:
+	// val := console_mem_read_from_address(console, addr)
+	// console.cpu.status[.CF] = (val & 0x80) != 0
+	// val <<= 1
+	// console_mem_write_to_address(console, addr, val)
+	// console.cpu.acc |= val
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+	case .RLA:
+	// c: u8 = 0; if console.cpu.status[.CF] {c=1}
+	// val := console_mem_read_from_address(console, addr)
+	// console.cpu.status[.CF] = (val & 0x80) != 0
+	// val = (val << 1) | c
+	// console_mem_write_to_address(console, addr, val)
+	// console.cpu.acc &= val
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+	case .SRE:
+	// val := console_mem_read_from_address(console, addr)
+	// console.cpu.status[.CF] = (val & 0x01) != 0
+	// val >>= 1
+	// console_mem_write_to_address(console, addr, val)
+	// console.cpu.acc ~= val
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+	case .RRA:
+	// c: u8 = 0; if console.cpu.status[.CF] {c=128}
+	// val := console_mem_read_from_address(console, addr)
+	// carry_out := (val & 0x01) != 0
+	// val = (val >> 1) | c
+	// console_mem_write_to_address(console, addr, val)
+
+	// a := console.cpu.acc
+	// c_in: u16 = 0; if carry_out {c_in=1}
+	// temp: u16 = u16(a) + u16(val) + c_in
+	// console.cpu.status[.CF] = temp > 0xFF
+	// console.cpu.status[.VF] = ((u16(a) ^ temp) & (u16(val) ^ temp) & 0x80) != 0
+	// console.cpu.acc = u8(temp)
+	// cpu_set_zn(&console.cpu, console.cpu.acc)
+
+	case .JAM:
+	// // Halt execution, effectively. We can do this by setting PC to itself.
+	// console.cpu.pc = start_pc
+	// pc_incremented = true
+
+	case:
+	// Default case for unhandled (mostly illegal) instructions
+	// They will act like NOPs and just increment the PC.
+	}
+
+	if !pc_incremented {
+		console.cpu.pc = start_pc + u16(instruction.byte_size)
+	}
+
+	return
+
+
+	signed_overflow :: proc(a, b, result: u8) -> bool {
+		// (a & 0x80) == (b & 0x80): are sign bits of a and b are the same 
+		// (result & 0x80) != (a & 0x80): is sign bit of the result is
+		// different from the sign bit of the original numbers
+		return (a & 0x80) == (b & 0x80) && (result & 0x80) != (a & 0x80)
+	}
+
+	is_page_crossed :: proc(address1, address2: u16) -> bool {
+		return address1 & 0xff00 != address2 & 0xff00
+	}
+
+	cpu_stack_push :: proc(console: ^Console, data: u8) -> Memory_Error {
+		console_mem_write_to_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp), data) or_return
+		console.cpu.sp -= 1
+		return .None
+	}
+
+	cpu_stack_pull :: proc(console: ^Console) -> (u8, Memory_Error) {
+		console.cpu.sp += 1
+		return console_mem_read_from_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp))
+	}
+
+	cpu_set_zn :: proc(console: ^Console, data: u8) {
+		console.cpu.status -= {.ZF, .NF}
+		if data == 0 do console.cpu.status += {.ZF}
+		if (data & 0x80) != 0 do console.cpu.status += {.NF}
+	}
+
+	// branch handles the logic for all conditional branch instructions.
+	branch :: proc(console: ^Console, condition: bool) {
+		if condition {
+			console.stalls += 1
+			rel_addr, error := console_mem_read_from_address(console, console.cpu.pc + 1)
+			jump_addr := u16(i32(console.cpu.pc) + 2 + i32(rel_addr))
+
+			if (console.cpu.pc + 2) & 0xFF00 != jump_addr & 0xFF00 {
+				console.stalls += 1 // Page cross adds another cycle
+			}
+			console.cpu.pc = jump_addr
+		} else {
+			console.cpu.pc += 2
+		}
+	}
+
+	// calculate the effective address for an instruction and checks for page crossing
+	// assumes that pc is pointing to opcode
+	get_operand_address :: proc(
+		console: ^Console,
+		mode: Instruction_Addressing_Mode,
+	) -> (
+		return_addr: u16,
+		page_crossed: bool,
+		error: Memory_Error,
+	) {
+		// system is little endian so low byte is stored first in memory
+
+		cpu := &console.cpu
+		switch mode {
+		case .Immediate:
+			return cpu.pc + 1, false, .None
+		case .Zeropage:
+			zp_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			return_addr = u16(zp_addr)
+		case .Zeropage_X:
+			// overflow is ignored so 0x00ff (address) + 1 (X or Y) will cause
+			// wraparound ensuring that the address is always contained within
+			// the zeropage
+			base_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			return_addr := u16(base_addr + cpu.x) // emulate overflow properly
+		case .Zeropage_Y:
+			base_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			return_addr = u16(base_addr + cpu.y)
+		case .Absolute:
+			lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
+			return_addr = (u16(hi) << 8) | u16(lo)
+		case .Absolute_X:
+			lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
+			base_addr := (u16(hi) << 8) | u16(lo)
+			return_addr = base_addr + u16(cpu.x)
+			page_crossed = is_page_crossed(base_addr, return_addr)
+		case .Absolute_Y:
+			lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
+			base_addr := (u16(hi) << 8) | u16(lo)
+			return_addr = base_addr + u16(cpu.y)
+			page_crossed = is_page_crossed(base_addr, return_addr)
+		case .Indirect:
+			// the infamous JMP indirect bug: if the low byte of the address vector
+			// is 0xFF, due to incorrect wraparound the high byte is fetched
+			// from the start of the same page, not the next one.
+			lo_ptr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			hi_ptr := console_mem_read_from_address(console, cpu.pc + 2) or_return
+			ptr := (u16(hi_ptr) << 8) | u16(lo_ptr)
+			lo := console_mem_read_from_address(console, ptr) or_return
+			hi_ptr_buggy := (ptr & 0xff00) | u16(u8(ptr + 1)) // emulate overflow
+			hi := console_mem_read_from_address(console, hi_ptr_buggy) or_return
+			return_addr = (u16(hi) << 8) | u16(lo)
+		case .Zeropage_Indirect_X:
+			zp_base := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			ptr := zp_base + cpu.x
+			lo := console_mem_read_from_address(console, u16(ptr)) or_return
+			hi := console_mem_read_from_address(console, u16(ptr + 1)) or_return
+			return_addr = (u16(hi) << 8) | u16(lo)
+		case .Zeropage_Indirect_Y:
+			// zp_ptr, lo, hi: u8
+			// error: Memory_Error
+			zp_ptr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+			lo := console_mem_read_from_address(console, u16(zp_ptr)) or_return
+			hi := console_mem_read_from_address(console, u16(zp_ptr + 1)) or_return
+			base_addr := (u16(hi) << 8) | u16(lo)
+			return_addr = base_addr + u16(cpu.y)
+			page_crossed = is_page_crossed(base_addr, return_addr)
+		case .Implied, .Accumulator, .Relative:
+		// Implied, Accumulator, and Relative modes don't use this function.
+		}
+
+		return
+	}
+}
+
 
 // For documentation regarding the CPU, please refer to:
 // https://www.cpcwiki.eu/index.php/MOS_6505
 CPU :: struct {
-	x:      u8,
-	y:      u8,
-	acc:    u8,
-	status: bit_set[Processor_Status_Flags;u16],
+	x:           u8,
+	y:           u8,
+	acc:         u8,
+	status:      bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
 	// stack is located in page 1 ($0100-$01FF), sp is offset to this base
-	sp:     u8,
-	pc:     u16,
+	sp:          u8,
+	pc:          u16,
+	cycle_count: int,
+	stall_count: int,
 }
+
+PAGE_1_ADDRESS :: 0x0100
 
 PPU :: struct {
 }
@@ -58,37 +703,69 @@ MEM :: struct {
 // allocate memory for console
 // will not initialize default values, use console_init
 console_make :: proc(
-	allocator: runtime.Allocator = context.allocator,
+	allocator := context.allocator,
 	loc := #caller_location,
 ) -> (
-	Console,
-	runtime.Allocator_Error,
-) {
+	console: ^Console,
+	err: runtime.Allocator_Error,
+) #optional_allocator_error {
+	// dont check error, know that interval is closed
+	ram_size, _ := utils.interval_size(CPU_INTERNAL_RAM_INTERVAL)
+	ram := make_slice([]u8, ram_size, allocator, loc) or_return
+	console = new(Console, allocator, loc) or_return
+	console.ram = ram
 
-
-	return {}, .None
+	return
 }
 
 // initialize default console values
 // will not allocate memory, use console_make
 console_init :: proc(console: ^Console) {
-
+	console.cpu.sp = 0xFD // Initial stack pointer state after reset
+	console.cpu.status = {.IF} // Initial flags state
+	// In a real NES, the PC would be set from the reset vector ($FFFC/D)
+	// For now, we can set it to a test location.
+	console.cpu.pc = 0xC000
 }
 
 // free memory allocated to console
-console_delete :: proc(console: ^Console) {
-
+console_delete :: proc(
+	console: ^Console,
+	allocator := context.allocator,
+	loc := #caller_location,
+) -> runtime.Allocator_Error {
+	delete_slice(console.ram, allocator, loc) or_return
+	free(console, allocator, loc) or_return
+	return .None
 }
 
 
-mem_write_to_address :: proc(mem: ^MEM, address: u16, data: u8) -> bool {
+Memory_Error :: enum {
+	None,
+	Invalid_Address,
+	Read_Only,
+}
 
-	return true
+@(private = "file")
+CPU_INTERNAL_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1FFF, .Closed} // 2KB ram mirrored 4 times
+
+@(require_results)
+console_mem_write_to_address :: proc(console: ^Console, address: u16, data: u8) -> Memory_Error {
+	if !utils.interval_contains(CPU_INTERNAL_RAM_INTERVAL, address) {
+		return .Invalid_Address
+	}
+
+	console.ram[address] = data
+	return .None
 }
 
 
-mem_read_from_address :: proc(mem: ^MEM, address: u16) -> u8 {
+@(require_results)
+console_mem_read_from_address :: proc(console: ^Console, address: u16) -> (u8, Memory_Error) {
+	if !utils.interval_contains(CPU_INTERNAL_RAM_INTERVAL, address) {
+		return 0, .Invalid_Address
+	}
 
-	return 0
+	return console.ram[address], .None
 }
 

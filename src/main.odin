@@ -1,11 +1,16 @@
 package nemu
 
 import runtime "base:runtime"
+import fmt "core:fmt"
 import log "core:log"
+import mem "core:mem"
+import strings "core:strings"
 
 ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, "./assets")
 
 default_context: runtime.Context
+
+console: ^Console
 
 main :: proc() {
 	logger := log.create_console_logger(.Info)
@@ -46,6 +51,12 @@ main :: proc() {
 	}
 
 	default_context = context
-}
 
+	fmt.println("Hello World")
+
+
+	console = console_make()
+	console_init(console)
+	console_delete(console)
+}
 
