@@ -52,11 +52,18 @@ main :: proc() {
 
 	default_context = context
 
-	fmt.println("Hello World")
-
+	// instruction := get_instruction_from_opcode(0x1e)
+	// fmt.println(instruction)
 
 	console = console_make()
 	console_init(console)
+
+	rel_addr := u8(0xFD)
+	jump_addr := u16(i16(console.cpu.pc) + 2 + i16(i8(rel_addr)))
+
+	fmt.println(console.cpu.pc)
+	fmt.println(jump_addr)
+
 	console_delete(console)
 }
 

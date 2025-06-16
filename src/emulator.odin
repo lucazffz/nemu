@@ -17,6 +17,41 @@ Console :: struct {
 	stalls: int,
 }
 
+// For documentation regarding the CPU, please refer to:
+// https://www.cpcwiki.eu/index.php/MOS_6505
+CPU :: struct {
+	x:            u8,
+	y:            u8,
+	acc:          u8,
+	status:       bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
+	// stack is located in page 1 ($0100-$01FF), sp is offset to this base
+	sp:           u8,
+	pc:           u16,
+	irq:          bool,
+	nmi:          bool,
+	reset:        bool,
+	cycle_count:  int,
+	stall_count:  int,
+	decmial_mode: bool,
+}
+
+PAGE_1_ADDRESS :: 0x0100
+
+PPU :: struct {
+}
+
+APU :: struct {
+}
+
+// MEM :: struct {
+// }
+
+Memory_Error :: enum {
+	None,
+	Invalid_Address,
+	Read_Only,
+}
+
 // NF - Negative Flag         : 1 when result is negative
 // VF - Overflow Flag         : 1 on signed overflow
 // BF - Break Flag            : 1 when pushed by inst (BRK/PHP) and 0 when popped by irq (NMI/IRQ)
@@ -167,11 +202,6 @@ get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 	}
 }
 
-Instruction_Error :: enum {
-	None,
-	Illegal,
-	Memory_Access_Error,
-}
 
 // instruction will be nil unless new instruction is fetched
 @(require_results)
@@ -183,6 +213,7 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 		return
 	}
 
+
 	operand_addr: u16
 	page_crossed: bool
 	pc_incremented := false
@@ -191,384 +222,423 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 	opcode := console_mem_read_from_address(console, start_pc) or_return
 	instruction = get_instruction_from_opcode(opcode)
 
-	console.stalls = instruction.cycle_count - 1
-	console.cycles += 1
+	// @todo: handle interrupt hijacking
+	handle_interrupts: {
+		INTERRUPT_CYCLE_COUNT :: 7
+		// the pushed PC is expected to point to the next
+		// instruction to be executed
+		if console.cpu.reset {
+			lo := console_mem_read_from_address(console, 0xfffc) or_return
+			hi := console_mem_read_from_address(console, 0xfffd) or_return
+			console.cpu.pc = (u16(hi) << 8 | u16(lo))
+			console.stalls = INTERRUPT_CYCLE_COUNT
+			return
+		}
 
+		// BRK is handled as a regular instruction
+		if instruction.type == .BRK do break handle_interrupts
 
-	// pre-calculate address for modes that need it
-	#partial switch instruction.addressing_mode {
-	case .Immediate, .Accumulator, .Implied, .Relative:
-	// no address to fetch
-	case:
-		operand_addr, page_crossed = get_operand_address(
-			console,
-			instruction.addressing_mode,
-		) or_return
-		if page_crossed {
-			console.stalls += instruction.page_boundary_extra_cycles
+		if console.cpu.nmi {
+			pc_to_push := start_pc
+			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
+			cpu_stack_push(console, u8(pc_to_push)) or_return
+			status_byte := status_flags_to_byte(console.cpu.status, false)
+			cpu_stack_push(console, status_byte) or_return
+			lo := console_mem_read_from_address(console, 0xfffa) or_return
+			hi := console_mem_read_from_address(console, 0xfffb) or_return
+			console.cpu.status += {.IF}
+			console.cpu.pc = (u16(hi) << 8) | u16(lo)
+			console.stalls = INTERRUPT_CYCLE_COUNT
+			return
+
+		}
+
+		if console.cpu.irq {
+			if .IF in console.cpu.status do break handle_interrupts
+			// same as for NMI onli different interrupt vector
+			pc_to_push := start_pc
+			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
+			cpu_stack_push(console, u8(pc_to_push)) or_return
+			status_byte := status_flags_to_byte(console.cpu.status, false)
+			cpu_stack_push(console, status_byte) or_return
+			lo := console_mem_read_from_address(console, 0xfffe) or_return
+			hi := console_mem_read_from_address(console, 0xffff) or_return
+			console.cpu.status += {.IF}
+			console.cpu.pc = (u16(hi) << 8) | u16(lo)
+			console.stalls = INTERRUPT_CYCLE_COUNT
+			return
 		}
 	}
 
+	execute_instruction: {
+		console.stalls = instruction.cycle_count - 1
+		console.cycles += 1
 
-	#partial switch instruction.type {
-	// === Arithmetic and Logical ===
-	case .ADC:
-		console.cpu.status -= {.CF, .VF}
-		val := console_mem_read_from_address(console, operand_addr) or_return
-		a := console.cpu.acc
-		c := .CF in console.cpu.status
-		if a + val == 0xff && c do console.cpu.status += {.CF}
-		result := a + val + u8(c)
-		signed_overflow := signed_overflow(a, val, result)
-		if signed_overflow do console.cpu.status += {.VF}
-		console.cpu.acc = result
-		cpu_set_zn(console, console.cpu.acc)
-	case .SBC, .USBC:
-	// val := console_mem_read_from_address(console, addr)
-	// a := console.cpu.acc
-	// c: u16 = 0; if console.cpu.status[.CF] {c=1}
-	// temp: u16 = u16(a) - u16(val) - (1-c)
-	// console.cpu.status[.CF] = temp < 0x100
-	// console.cpu.status[.VF] = ((u16(a) ^ temp) & (u16(^val) ^ temp) & 0x80) != 0
-	// console.cpu.acc = u8(temp)
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-	case .AND:
-		val := console_mem_read_from_address(console, operand_addr) or_return
-		console.cpu.acc &= val
-		cpu_set_zn(console, console.cpu.acc)
-	case .ORA:
-	// val := console_mem_read_from_address(console, addr)
-	// console.cpu.acc |= val
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-	case .EOR:
-	// val := console_mem_read_from_address(console, addr)
-	// console.cpu.acc = console.cpu.acc ~ val
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
+		// pre-calculate address for modes that need it
+		#partial switch instruction.addressing_mode {
+		case .Immediate, .Accumulator, .Implied, .Relative:
+		// no address to fetch
+		case:
+			operand_addr, page_crossed = get_operand_address(
+				console,
+				instruction.addressing_mode,
+			) or_return
+			if page_crossed {
+				console.stalls += instruction.page_boundary_extra_cycles
+			}
+		}
 
-	// === Compare ===
-	case .CMP:
-	// val := console_mem_read_from_address(console, addr)
-	// temp := console.cpu.acc - val
-	// console.cpu.status[.CF] = console.cpu.acc >= val
-	// cpu_set_zn(&console.cpu, temp)
-	case .CPX:
-	// val := console_mem_read_from_address(console, addr)
-	// temp := console.cpu.x - val
-	// console.cpu.status[.CF] = console.cpu.x >= val
-	// cpu_set_zn(&console.cpu, temp)
-	case .CPY:
-	// val := console_mem_read_from_address(console, addr)
-	// temp := console.cpu.y - val
-	// console.cpu.status[.CF] = console.cpu.y >= val
-	// cpu_set_zn(&console.cpu, temp)
+		#partial switch instruction.type {
+		// === Arithmetic and Logical ===
+		case .ADC, .SBC:
+			// ADC and SBC are identical instruction with the only difference
+			// that SBC will bit invert the operand
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			if instruction.type == .SBC do val = ~val // invert operand if SBC
+			a := console.cpu.acc
+			c := .CF in console.cpu.status
+			console.cpu.status -= {.CF, .VF}
+			if u16(a) + u16(val) + u16(c) > 0xff do console.cpu.status += {.CF}
+			result := a + val + u8(c)
+			// @note the signed overflow could be calculated more gracefully
+			// (a & 0x80) == (b & 0x80): are sign bits of a and b are the same 
+			// (result & 0x80) != (a & 0x80): is sign bit of the result is
+			// different from the sign bit of the original numbers
+			signed_overflow := (a & 0x80) == (val & 0x80) && (result & 0x80) != (a & 0x80)
+			if signed_overflow do console.cpu.status += {.VF}
+			console.cpu.acc = result
+			cpu_set_zn(console, console.cpu.acc)
+		case .AND:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			console.cpu.acc &= val
+			cpu_set_zn(console, console.cpu.acc)
+		case .ORA:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			console.cpu.acc |= val
+			cpu_set_zn(console, console.cpu.acc)
+		case .EOR:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			console.cpu.acc ~= val
+			cpu_set_zn(console, console.cpu.acc)
+		// === Compare ===
+		case .CMP:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			temp := console.cpu.acc - val
+			console.cpu.status -= {.CF}
+			if console.cpu.acc >= val do console.cpu.status += {.CF}
+			cpu_set_zn(console, temp)
+		case .CPX:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			temp := console.cpu.x - val
+			console.cpu.status -= {.CF}
+			if console.cpu.x >= val do console.cpu.status += {.CF}
+			cpu_set_zn(console, temp)
+		case .CPY:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			temp := console.cpu.y - val
+			console.cpu.status -= {.CF}
+			if console.cpu.y >= val do console.cpu.status += {.CF}
+			cpu_set_zn(console, temp)
+		// === Bit Test ===
+		case .BIT:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			console.cpu.status -= {.ZF, .NF, .VF}
+			if console.cpu.acc & val == 0 do console.cpu.status += {.ZF}
+			if 0x80 & val != 0 do console.cpu.status += {.NF}
+			if 0x40 & val != 0 do console.cpu.status += {.VF}
+		// === Load/Store ===
+		case .LDA:
+			console.cpu.acc = console_mem_read_from_address(console, operand_addr) or_return
+			cpu_set_zn(console, console.cpu.acc)
+		case .LDX:
+			console.cpu.x = console_mem_read_from_address(console, operand_addr) or_return
+			cpu_set_zn(console, console.cpu.x)
+		case .LDY:
+			console.cpu.y = console_mem_read_from_address(console, operand_addr) or_return
+			cpu_set_zn(console, console.cpu.y)
+		case .STA:
+			console_mem_write_to_address(console, operand_addr, console.cpu.acc) or_return
+		case .STX:
+			console_mem_write_to_address(console, operand_addr, console.cpu.x) or_return
+		case .STY:
+			console_mem_write_to_address(console, operand_addr, console.cpu.y) or_return
+		// === Increment/Decrement ===
+		case .INC:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			val += 1
+			console_mem_write_to_address(console, operand_addr, val) or_return
+			cpu_set_zn(console, val)
+		case .DEC:
+			val := console_mem_read_from_address(console, operand_addr) or_return
+			val -= 1
+			console_mem_write_to_address(console, operand_addr, val) or_return
+			cpu_set_zn(console, val)
+		case .INX:
+			console.cpu.x += 1
+			cpu_set_zn(console, console.cpu.x)
+		case .INY:
+			console.cpu.y += 1
+			cpu_set_zn(console, console.cpu.y)
+		case .DEX:
+			console.cpu.x -= 1
+			cpu_set_zn(console, console.cpu.x)
+		case .DEY:
+			console.cpu.y -= 1
+			cpu_set_zn(console, console.cpu.y)
+		// === Shifts and Rotates ===
+		case .ASL:
+			console.cpu.status -= {.CF}
+			if instruction.addressing_mode == .Accumulator {
+				if console.cpu.acc & 0x80 != 0 do console.cpu.status += {.CF}
+				console.cpu.acc <<= 1
+				cpu_set_zn(console, console.cpu.acc)
+			} else {
+				val := console_mem_read_from_address(console, operand_addr) or_return
+				if val & 0x80 != 0 do console.cpu.status += {.CF}
+				val <<= 1
+				cpu_set_zn(console, val)
+				console_mem_write_to_address(console, operand_addr, val) or_return
+			}
+		case .LSR:
+			console.cpu.status -= {.CF}
+			if instruction.addressing_mode == .Accumulator {
+				if console.cpu.acc & 0x01 != 0 do console.cpu.status += {.CF}
+				console.cpu.acc >>= 1
+				cpu_set_zn(console, console.cpu.acc)
+			} else {
+				val := console_mem_read_from_address(console, operand_addr) or_return
+				if val & 0x01 != 0 do console.cpu.status += {.CF}
+				val >>= 1
+				console_mem_write_to_address(console, operand_addr, val) or_return
+				cpu_set_zn(console, val)
+			}
+		case .ROL:
+			console.cpu.status -= {.CF}
+			c := u8(.CF in console.cpu.status)
+			if instruction.addressing_mode == .Accumulator {
+				if console.cpu.acc & 0x80 != 0 do console.cpu.status += {.CF}
+				console.cpu.acc = (console.cpu.acc << 1) | c
+				cpu_set_zn(console, console.cpu.acc)
+			} else {
+				val := console_mem_read_from_address(console, operand_addr) or_return
+				if val & 0x80 != 0 do console.cpu.status += {.CF}
+				val = (val << 1) | c
+				console_mem_write_to_address(console, operand_addr, val) or_return
+				cpu_set_zn(console, val)
+			}
+		case .ROR:
+			console.cpu.status -= {.CF}
+			c := u8(.CF in console.cpu.status) << 7
+			if instruction.addressing_mode == .Accumulator {
+				if console.cpu.acc & 0x01 != 0 do console.cpu.status += {.CF}
+				console.cpu.acc = (console.cpu.acc >> 1) | c
+				cpu_set_zn(console, console.cpu.acc)
+			} else {
+				val := console_mem_read_from_address(console, operand_addr) or_return
+				if val & 0x01 != 0 do console.cpu.status += {.CF}
+				val = (val >> 1) | c
+				console_mem_write_to_address(console, operand_addr, val) or_return
+				cpu_set_zn(console, val)
+			}
+		// === Program Flow Control ===
+		case .JMP:
+			console.cpu.pc = operand_addr
+			pc_incremented = true
+		case .JSR:
+			pc_to_push := start_pc + 2 // address of last byte of JSR instruction
+			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
+			cpu_stack_push(console, u8(pc_to_push)) or_return
+			console.cpu.pc = operand_addr
+			pc_incremented = true
+		case .RTS:
+			lo := cpu_stack_pull(console) or_return
+			hi := cpu_stack_pull(console) or_return
+			// add 1 since PC points to the last byte of the JSR instruction
+			console.cpu.pc = ((u16(hi) << 8) | u16(lo)) + 1
+			pc_incremented = true
+		case .RTI:
+			status_byte := cpu_stack_pull(console) or_return
+			lo := cpu_stack_pull(console) or_return
+			hi := cpu_stack_pull(console) or_return
+			console.cpu.status = status_flags_from_byte(status_byte)
+			// Dont add 1 since PC is expected to point to the first byte
+			// of the next instruction when interrupt is triggered.
+			// Different from subroutine jump (JSR) where PC is the last byte of
+			// JSR.
+			console.cpu.pc = (u16(hi) << 8) | u16(lo)
+			pc_incremented = true
+		// === Branches ===
+		case .BCC:
+			branch(console, .CF not_in console.cpu.status) or_return;pc_incremented = true
+		case .BCS:
+			branch(console, .CF in console.cpu.status) or_return;pc_incremented = true
+		case .BEQ:
+			branch(console, .ZF in console.cpu.status) or_return;pc_incremented = true
+		case .BNE:
+			branch(console, .ZF not_in console.cpu.status) or_return;pc_incremented = true
+		case .BMI:
+			branch(console, .NF in console.cpu.status) or_return;pc_incremented = true
+		case .BPL:
+			branch(console, .NF not_in console.cpu.status) or_return;pc_incremented = true
+		case .BVC:
+			branch(console, .VF not_in console.cpu.status) or_return;pc_incremented = true
+		case .BVS:
+			branch(console, .VF in console.cpu.status) or_return;pc_incremented = true
+		// === Register Transfers ===
+		case .TAX:
+			console.cpu.x = console.cpu.acc;cpu_set_zn(console, console.cpu.x)
+		case .TAY:
+			console.cpu.y = console.cpu.acc;cpu_set_zn(console, console.cpu.y)
+		case .TXA:
+			console.cpu.acc = console.cpu.x;cpu_set_zn(console, console.cpu.acc)
+		case .TYA:
+			console.cpu.acc = console.cpu.y;cpu_set_zn(console, console.cpu.acc)
+		case .TSX:
+			console.cpu.x = console.cpu.sp;cpu_set_zn(console, console.cpu.x)
+		case .TXS:
+			console.cpu.sp = console.cpu.x
+		// === Stack Operations ===
+		case .PHA:
+			cpu_stack_push(console, console.cpu.acc) or_return
+		case .PHP:
+			// when pushed, BF and _5 are set
+			status_byte := status_flags_to_byte(console.cpu.status)
+			cpu_stack_push(console, status_byte) or_return
+		case .PLA:
+			console.cpu.acc = cpu_stack_pull(console) or_return
+			cpu_set_zn(console, console.cpu.acc)
+		case .PLP:
+			// when pulled, BF and _5 are set
+			status_byte := cpu_stack_pull(console) or_return
+			console.cpu.status = status_flags_from_byte(status_byte)
+		// === Flag Set/Clear ===
+		case .CLC:
+			console.cpu.status -= {.CF}
+		case .CLD:
+			console.cpu.status -= {.DF}
+		case .CLI:
+			console.cpu.status -= {.IF}
+		case .CLV:
+			console.cpu.status -= {.VF}
+		case .SEC:
+			console.cpu.status += {.CF}
+		case .SED:
+			console.cpu.status += {.DF}
+		case .SEI:
+			console.cpu.status += {.IF}
 
-	// === Bit Test ===
-	case .BIT:
-	// val := console_mem_read_from_address(console, addr)
-	// console.cpu.status[.ZF] = (console.cpu.acc & val) == 0
-	// console.cpu.status[.NF] = (val & 0x80) != 0
-	// console.cpu.status[.VF] = (val & 0x40) != 0
+		// === System and NOP ===
+		case .BRK:
+			// BRK is a software-triggered interrupt, and since both BRK and
+			// hardware-triggered interrupts (IRQ) reuse the same microcode, BRK
+			// is followed by an ignored padding byte to match IRQ. This is why
+			// we add 2 to PC instead of 1.
+			pc_to_push := start_pc + 2
+			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
+			cpu_stack_push(console, u8(pc_to_push)) or_return
+			status_byte := status_flags_to_byte(console.cpu.status)
+			cpu_stack_push(console, status_byte) or_return
+			lo := console_mem_read_from_address(console, 0xfffe) or_return
+			hi := console_mem_read_from_address(console, 0xffff) or_return
+			console.cpu.status += {.IF}
+			console.cpu.pc = (u16(hi) << 8) | u16(lo)
+			pc_incremented = true
+		case .NOP:
+		// does nothing
 
-	// === Load/Store ===
-	case .LDA:
-	// console.cpu.acc = console_mem_read_from_address(console, addr)
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-	case .LDX:
-	// console.cpu.x = console_mem_read_from_address(console, addr)
-	// cpu_set_zn(&console.cpu, console.cpu.x)
-	case .LDY:
-	// console.cpu.y = console_mem_read_from_address(console, addr)
-	// cpu_set_zn(&console.cpu, console.cpu.y)
-	case .STA:
-	// console_mem_write_to_address(console, addr, console.cpu.acc)
-	case .STX:
-	// console_mem_write_to_address(console, addr, console.cpu.x)
-	case .STY:
-	// console_mem_write_to_address(console, addr, console.cpu.y)
+		// === Illegal Opcodes ===
+		// For now, most illegal opcodes will act as NOPs.
+		// A full implementation requires emulating their specific, often quirky, behavior.
+		case .LAX:
+		// val := console_mem_read_from_address(console, addr)
+		// console.cpu.acc = val
+		// console.cpu.x = val
+		// cpu_set_zn(&console.cpu, val)
+		case .SAX:
+		// val := console.cpu.acc & console.cpu.x
+		// console_mem_write_to_address(console, addr, val)
+		case .DCP:
+		// val := console_mem_read_from_address(console, addr) - 1
+		// console_mem_write_to_address(console, addr, val)
+		// temp := console.cpu.acc - val
+		// console.cpu.status[.CF] = console.cpu.acc >= val
+		// cpu_set_zn(&console.cpu, temp)
+		case .ISC:
+		// val := console_mem_read_from_address(console, addr) + 1
+		// console_mem_write_to_address(console, addr, val)
+		// a := console.cpu.acc
+		// c: u16 = 0; if console.cpu.status[.CF] {c=1}
+		// temp: u16 = u16(a) - u16(val) - (1-c)
+		// console.cpu.status[.CF] = temp < 0x100
+		// console.cpu.status[.VF] = ((u16(a) ^ temp) & (u16(^val) ^ temp) & 0x80) != 0
+		// console.cpu.acc = u8(temp)
+		// cpu_set_zn(&console.cpu, console.cpu.acc)
+		case .SLO:
+		// val := console_mem_read_from_address(console, addr)
+		// console.cpu.status[.CF] = (val & 0x80) != 0
+		// val <<= 1
+		// console_mem_write_to_address(console, addr, val)
+		// console.cpu.acc |= val
+		// cpu_set_zn(&console.cpu, console.cpu.acc)
+		case .RLA:
+		// c: u8 = 0; if console.cpu.status[.CF] {c=1}
+		// val := console_mem_read_from_address(console, addr)
+		// console.cpu.status[.CF] = (val & 0x80) != 0
+		// val = (val << 1) | c
+		// console_mem_write_to_address(console, addr, val)
+		// console.cpu.acc &= val
+		// cpu_set_zn(&console.cpu, console.cpu.acc)
+		case .SRE:
+		// val := console_mem_read_from_address(console, addr)
+		// console.cpu.status[.CF] = (val & 0x01) != 0
+		// val >>= 1
+		// console_mem_write_to_address(console, addr, val)
+		// console.cpu.acc ~= val
+		// cpu_set_zn(&console.cpu, console.cpu.acc)
+		case .RRA:
+		// c: u8 = 0; if console.cpu.status[.CF] {c=128}
+		// val := console_mem_read_from_address(console, addr)
+		// carry_out := (val & 0x01) != 0
+		// val = (val >> 1) | c
+		// console_mem_write_to_address(console, addr, val)
 
-	// === Increment/Decrement ===
-	case .INC:
-	// val := console_mem_read_from_address(console, addr) + 1
-	// console_mem_write_to_address(console, addr, val)
-	// cpu_set_zn(&console.cpu, val)
-	case .DEC:
-	// val := console_mem_read_from_address(console, addr) - 1
-	// console_mem_write_to_address(console, addr, val)
-	// cpu_set_zn(&console.cpu, val)
-	case .INX:
-	// console.cpu.x += 1
-	// cpu_set_zn(&console.cpu, console.cpu.x)
-	case .INY:
-	// console.cpu.y += 1
-	// cpu_set_zn(&console.cpu, console.cpu.y)
-	case .DEX:
-	// console.cpu.x -= 1
-	// cpu_set_zn(&console.cpu, console.cpu.x)
-	case .DEY:
-	// console.cpu.y -= 1
-	// cpu_set_zn(&console.cpu, console.cpu.y)
+		// a := console.cpu.acc
+		// c_in: u16 = 0; if carry_out {c_in=1}
+		// temp: u16 = u16(a) + u16(val) + c_in
+		// console.cpu.status[.CF] = temp > 0xFF
+		// console.cpu.status[.VF] = ((u16(a) ^ temp) & (u16(val) ^ temp) & 0x80) != 0
+		// console.cpu.acc = u8(temp)
+		// cpu_set_zn(&console.cpu, console.cpu.acc)
 
-	// === Shifts and Rotates ===
-	case .ASL:
-	// var val: u8
-	// if instruction.addressing_mode == .Accumulator {
-	// 	val = console.cpu.acc
-	// 	console.cpu.status[.CF] = (val & 0x80) != 0
-	// 	console.cpu.acc = val << 1
-	// 	cpu_set_zn(&console.cpu, console.cpu.acc)
-	// } else {
-	// 	val = console_mem_read_from_address(console, addr)
-	// 	console.cpu.status[.CF] = (val & 0x80) != 0
-	// 	val <<= 1
-	// 	console_mem_write_to_address(console, addr, val)
-	// 	cpu_set_zn(&console.cpu, val)
-	// }
-	case .LSR:
-	// var val: u8
-	// if instruction.addressing_mode == .Accumulator {
-	// 	val = console.cpu.acc
-	// 	console.cpu.status[.CF] = (val & 0x01) != 0
-	// 	console.cpu.acc = val >> 1
-	// 	cpu_set_zn(&console.cpu, console.cpu.acc)
-	// } else {
-	// 	val = console_mem_read_from_address(console, addr)
-	// 	console.cpu.status[.CF] = (val & 0x01) != 0
-	// 	val >>= 1
-	// 	console_mem_write_to_address(console, addr, val)
-	// 	cpu_set_zn(&console.cpu, val)
-	// }
-	case .ROL:
-	// c: u8 = 0; if console.cpu.status[.CF] {c=1}
-	// var val: u8
-	// if instruction.addressing_mode == .Accumulator {
-	// 	val = console.cpu.acc
-	// 	console.cpu.status[.CF] = (val & 0x80) != 0
-	// 	console.cpu.acc = (val << 1) | c
-	// 	cpu_set_zn(&console.cpu, console.cpu.acc)
-	// } else {
-	// 	val = console_mem_read_from_address(console, addr)
-	// 	console.cpu.status[.CF] = (val & 0x80) != 0
-	// 	val = (val << 1) | c
-	// 	console_mem_write_to_address(console, addr, val)
-	// 	cpu_set_zn(&console.cpu, val)
-	// }
-	case .ROR:
-	// c: u8 = 0; if console.cpu.status[.CF] {c=128}
-	// var val: u8
-	// if instruction.addressing_mode == .Accumulator {
-	// 	val = console.cpu.acc
-	// 	console.cpu.status[.CF] = (val & 0x01) != 0
-	// 	console.cpu.acc = (val >> 1) | c
-	// 	cpu_set_zn(&console.cpu, console.cpu.acc)
-	// } else {
-	// 	val = console_mem_read_from_address(console, addr)
-	// 	console.cpu.status[.CF] = (val & 0x01) != 0
-	// 	val = (val >> 1) | c
-	// 	console_mem_write_to_address(console, addr, val)
-	// 	cpu_set_zn(&console.cpu, val)
-	// }
-
-	// === Program Flow Control ===
-	case .JMP:
-	// console.cpu.pc = addr
-	// pc_incremented = true
-	case .JSR:
-	// pc_to_push := start_pc + 2
-	// cpu_push(console, u8(pc_to_push >> 8))
-	// cpu_push(console, u8(pc_to_push))
-	// console.cpu.pc = addr
-	// pc_incremented = true
-	case .RTS:
-	// lo := u16(cpu_pull(console))
-	// hi := u16(cpu_pull(console))
-	// console.cpu.pc = ((hi << 8) | lo) + 1
-	// pc_incremented = true
-	case .RTI:
-		// status_byte := cpu_pull(console)
-		// for flag in Processor_Status_Flags {
-		// 	// BF and _5 flags are not restored from stack
-		// 	if flag != .BF && flag != ._5 {
-		// 		console.cpu.status[flag] = (status_byte & (1 << int(flag))) != 0
-		// 	}
-		// }
-		// lo := u16(cpu_pull(console))
-		// hi := u16(cpu_pull(console))
-		// console.cpu.pc = (hi << 8) | lo
+		case .JAM:
+		// // Halt execution, effectively. We can do this by setting PC to itself.
+		// console.cpu.pc = start_pc
 		// pc_incremented = true
 
-		// === Branches ===
-		// case .BCC: branch(console, !console.cpu.status[.CF])
-		// case .BCS: branch(console, console.cpu.status[.CF])
-		// case .BEQ: branch(console, console.cpu.status[.ZF])
-		// case .BNE: branch(console, !console.cpu.status[.ZF])
-		// case .BMI: branch(console, console.cpu.status[.NF])
-		// case .BPL: branch(console, !console.cpu.status[.NF])
-		// case .BVC: branch(console, !console.cpu.status[.VF])
-		// case .BVS: branch(console, console.cpu.status[.VF])
-		// case .BCC, .BCS, .BEQ, .BNE, .BMI, .BPL, .BVC, .BVS:
-		pc_incremented = true
+		case:
+		// Default case for unhandled (mostly illegal) instructions
+		// They will act like NOPs and just increment the PC.
+		}
 
-	// === Register Transfers ===
-	case .TAX:
-		console.cpu.x = console.cpu.acc;cpu_set_zn(console, console.cpu.x)
-	case .TAY:
-		console.cpu.y = console.cpu.acc;cpu_set_zn(console, console.cpu.y)
-	case .TXA:
-		console.cpu.acc = console.cpu.x;cpu_set_zn(console, console.cpu.acc)
-	case .TYA:
-		console.cpu.acc = console.cpu.y;cpu_set_zn(console, console.cpu.acc)
-	case .TSX:
-		console.cpu.x = console.cpu.sp;cpu_set_zn(console, console.cpu.x)
-	case .TXS:
-		console.cpu.sp = console.cpu.x
+		if !pc_incremented {
+			console.cpu.pc = start_pc + u16(instruction.byte_size)
+		}
 
-	// === Stack Operations ===
-	// case .PHA: cpu_push(console, console.cpu.acc)
-	case .PHP:
-	// When pushed, BF and _5 are set
-	// status_byte := u8(console.cpu.status) | (1 << u8(Processor_Status_Flags.BF)) | (1 << u8(Processor_Status_Flags._5))
-	// cpu_push(console, status_byte)
-	case .PLA:
-	// console.cpu.acc = cpu_pull(console)
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-	case .PLP:
-	// status_byte := cpu_pull(console)
-	// for flag in Processor_Status_Flags {
-	// 	if flag != .BF && flag != ._5 {
-	// 		console.cpu.status[flag] = (status_byte & (1 << int(flag))) != 0
-	// 	}
-	// }
-
-	// === Flag Set/Clear ===
-	case .CLC:
-		console.cpu.status -= {.CF}
-	case .CLD:
-		console.cpu.status -= {.DF}
-	case .CLI:
-		console.cpu.status -= {.IF}
-	case .CLV:
-		console.cpu.status -= {.VF}
-	case .SEC:
-		console.cpu.status += {.CF}
-	case .SED:
-		console.cpu.status += {.DF}
-	case .SEI:
-		console.cpu.status += {.IF}
-
-	// === System and NOP ===
-	case .BRK:
-	// pc_to_push := start_pc + 2
-	// cpu_push(console, u8(pc_to_push >> 8))
-	// cpu_push(console, u8(pc_to_push))
-	// // BRK sets the B flag when pushing status to stack
-	// status_byte := u8(console.cpu.status) | (1 << u8(Processor_Status_Flags.BF))
-	// cpu_push(console, status_byte)
-	// console.cpu.status[.IF] = true
-	// lo := u16(console_mem_read_from_address(console, 0xFFFE))
-	// hi := u16(console_mem_read_from_address(console, 0xFFFF))
-	// console.cpu.pc = (hi << 8) | lo
-	// pc_incremented = true
-	case .NOP:
-	// Does nothing.
-
-	// === Illegal Opcodes ===
-	// For now, most illegal opcodes will act as NOPs.
-	// A full implementation requires emulating their specific, often quirky, behavior.
-	case .LAX:
-	// val := console_mem_read_from_address(console, addr)
-	// console.cpu.acc = val
-	// console.cpu.x = val
-	// cpu_set_zn(&console.cpu, val)
-	case .SAX:
-	// val := console.cpu.acc & console.cpu.x
-	// console_mem_write_to_address(console, addr, val)
-	case .DCP:
-	// val := console_mem_read_from_address(console, addr) - 1
-	// console_mem_write_to_address(console, addr, val)
-	// temp := console.cpu.acc - val
-	// console.cpu.status[.CF] = console.cpu.acc >= val
-	// cpu_set_zn(&console.cpu, temp)
-	case .ISC:
-	// val := console_mem_read_from_address(console, addr) + 1
-	// console_mem_write_to_address(console, addr, val)
-	// a := console.cpu.acc
-	// c: u16 = 0; if console.cpu.status[.CF] {c=1}
-	// temp: u16 = u16(a) - u16(val) - (1-c)
-	// console.cpu.status[.CF] = temp < 0x100
-	// console.cpu.status[.VF] = ((u16(a) ^ temp) & (u16(^val) ^ temp) & 0x80) != 0
-	// console.cpu.acc = u8(temp)
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-	case .SLO:
-	// val := console_mem_read_from_address(console, addr)
-	// console.cpu.status[.CF] = (val & 0x80) != 0
-	// val <<= 1
-	// console_mem_write_to_address(console, addr, val)
-	// console.cpu.acc |= val
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-	case .RLA:
-	// c: u8 = 0; if console.cpu.status[.CF] {c=1}
-	// val := console_mem_read_from_address(console, addr)
-	// console.cpu.status[.CF] = (val & 0x80) != 0
-	// val = (val << 1) | c
-	// console_mem_write_to_address(console, addr, val)
-	// console.cpu.acc &= val
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-	case .SRE:
-	// val := console_mem_read_from_address(console, addr)
-	// console.cpu.status[.CF] = (val & 0x01) != 0
-	// val >>= 1
-	// console_mem_write_to_address(console, addr, val)
-	// console.cpu.acc ~= val
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-	case .RRA:
-	// c: u8 = 0; if console.cpu.status[.CF] {c=128}
-	// val := console_mem_read_from_address(console, addr)
-	// carry_out := (val & 0x01) != 0
-	// val = (val >> 1) | c
-	// console_mem_write_to_address(console, addr, val)
-
-	// a := console.cpu.acc
-	// c_in: u16 = 0; if carry_out {c_in=1}
-	// temp: u16 = u16(a) + u16(val) + c_in
-	// console.cpu.status[.CF] = temp > 0xFF
-	// console.cpu.status[.VF] = ((u16(a) ^ temp) & (u16(val) ^ temp) & 0x80) != 0
-	// console.cpu.acc = u8(temp)
-	// cpu_set_zn(&console.cpu, console.cpu.acc)
-
-	case .JAM:
-	// // Halt execution, effectively. We can do this by setting PC to itself.
-	// console.cpu.pc = start_pc
-	// pc_incremented = true
-
-	case:
-	// Default case for unhandled (mostly illegal) instructions
-	// They will act like NOPs and just increment the PC.
-	}
-
-	if !pc_incremented {
-		console.cpu.pc = start_pc + u16(instruction.byte_size)
-	}
-
-	return
-
-
-	signed_overflow :: proc(a, b, result: u8) -> bool {
-		// (a & 0x80) == (b & 0x80): are sign bits of a and b are the same 
-		// (result & 0x80) != (a & 0x80): is sign bit of the result is
-		// different from the sign bit of the original numbers
-		return (a & 0x80) == (b & 0x80) && (result & 0x80) != (a & 0x80)
+		return
 	}
 
 	is_page_crossed :: proc(address1, address2: u16) -> bool {
 		return address1 & 0xff00 != address2 & 0xff00
 	}
 
+	@(require_results)
 	cpu_stack_push :: proc(console: ^Console, data: u8) -> Memory_Error {
 		console_mem_write_to_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp), data) or_return
 		console.cpu.sp -= 1
 		return .None
 	}
 
+	@(require_results)
 	cpu_stack_pull :: proc(console: ^Console) -> (u8, Memory_Error) {
 		console.cpu.sp += 1
 		return console_mem_read_from_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp))
@@ -580,24 +650,55 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 		if (data & 0x80) != 0 do console.cpu.status += {.NF}
 	}
 
-	// branch handles the logic for all conditional branch instructions.
-	branch :: proc(console: ^Console, condition: bool) {
+	// branch handles the logic for all conditional branch instructions
+	@(require_results)
+	branch :: proc(console: ^Console, condition: bool) -> Memory_Error {
 		if condition {
 			console.stalls += 1
-			rel_addr, error := console_mem_read_from_address(console, console.cpu.pc + 1)
-			jump_addr := u16(i32(console.cpu.pc) + 2 + i32(rel_addr))
+			rel_addr := console_mem_read_from_address(console, console.cpu.pc + 1) or_return
+			// + 2 to point to next instruction
+			jump_addr := u16(i16(console.cpu.pc) + 2 + i16(i8(rel_addr)))
 
-			if (console.cpu.pc + 2) & 0xFF00 != jump_addr & 0xFF00 {
-				console.stalls += 1 // Page cross adds another cycle
+			if is_page_crossed(console.cpu.pc + 2, jump_addr) {
+				console.stalls += 1 // page cross adds another cycle
 			}
 			console.cpu.pc = jump_addr
 		} else {
 			console.cpu.pc += 2
 		}
+
+		return .None
+	}
+
+	// sets _5 and BF to 1
+	status_flags_to_byte :: proc(flags: bit_set[Processor_Status_Flags], set_BF := true) -> u8 {
+		return(
+			(u8(.NF in flags) << 7) |
+			(u8(.VF in flags) << 6) |
+			(u8(1 << 5)) |
+			(u8(set_BF) << 4) |
+			(u8(.DF in flags) << 3) |
+			(u8(.IF in flags) << 2) |
+			(u8(.ZF in flags) << 1) |
+			(u8(.CF in flags) << 0) \
+		)
+	}
+
+	// sets _5 and BF to 1
+	status_flags_from_byte :: proc(byte: u8) -> (flags: bit_set[Processor_Status_Flags]) {
+		// bit BF and _5 (unused) are ignored
+		if byte & 0x80 == 1 do flags += {.NF}
+		if byte & 0x40 == 1 do flags += {.VF}
+		if byte & 0x08 == 1 do flags += {.DF}
+		if byte & 0x04 == 1 do flags += {.IF}
+		if byte & 0x02 == 1 do flags += {.ZF}
+		if byte & 0x01 == 1 do flags += {.CF}
+		return
 	}
 
 	// calculate the effective address for an instruction and checks for page crossing
 	// assumes that pc is pointing to opcode
+	@(require_results)
 	get_operand_address :: proc(
 		console: ^Console,
 		mode: Instruction_Addressing_Mode,
@@ -674,31 +775,12 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 	}
 }
 
+console_cpu_reset :: proc(console: ^Console) -> Memory_Error {
 
-// For documentation regarding the CPU, please refer to:
-// https://www.cpcwiki.eu/index.php/MOS_6505
-CPU :: struct {
-	x:           u8,
-	y:           u8,
-	acc:         u8,
-	status:      bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
-	// stack is located in page 1 ($0100-$01FF), sp is offset to this base
-	sp:          u8,
-	pc:          u16,
-	cycle_count: int,
-	stall_count: int,
+	return .None
+
 }
 
-PAGE_1_ADDRESS :: 0x0100
-
-PPU :: struct {
-}
-
-APU :: struct {
-}
-
-MEM :: struct {
-}
 
 // allocate memory for console
 // will not initialize default values, use console_init
@@ -739,12 +821,6 @@ console_delete :: proc(
 	return .None
 }
 
-
-Memory_Error :: enum {
-	None,
-	Invalid_Address,
-	Read_Only,
-}
 
 @(private = "file")
 CPU_INTERNAL_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1FFF, .Closed} // 2KB ram mirrored 4 times
