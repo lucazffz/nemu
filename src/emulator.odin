@@ -24,12 +24,10 @@ CPU :: struct {
 	y:            u8,
 	acc:          u8,
 	status:       bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
+	interrupt:    Hardware_Interrupt,
 	// stack is located in page 1 ($0100-$01FF), sp is offset to this base
 	sp:           u8,
 	pc:           u16,
-	irq:          bool,
-	nmi:          bool,
-	reset:        bool,
 	cycle_count:  int,
 	stall_count:  int,
 	decmial_mode: bool,
@@ -181,6 +179,12 @@ Instruction_Category :: enum {
 	Unstable,
 }
 
+Hardware_Interrupt :: enum {
+	None,
+	Reset,
+	NMI,
+	IRQ,
+}
 
 Instruction :: struct {
 	type:                       Instruction_Type,
@@ -203,21 +207,32 @@ get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 }
 
 
-// instruction will be nil unless new instruction is fetched
 @(require_results)
-console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error: Memory_Error) {
-	// emulate the fact that instructions take some amount of cycles to complete
+console_cpu_step :: proc(
+	console: ^Console,
+) -> (
+	cycles: int,
+	instruction: Instruction,
+	error: Memory_Error,
+) {
 	if console.stalls > 0 {
 		console.stalls -= 1
-		console.cycles += 1
 		return
 	}
-
 
 	operand_addr: u16
 	page_crossed: bool
 	pc_incremented := false
 	start_pc := console.cpu.pc
+
+	defer {
+		// branch, jump and some other instructions will directly set PC
+		if !pc_incremented {
+			console.cpu.pc = start_pc + u16(instruction.byte_size)
+		}
+
+		console.cycles += cycles
+	}
 
 	opcode := console_mem_read_from_address(console, start_pc) or_return
 	instruction = get_instruction_from_opcode(opcode)
@@ -227,18 +242,16 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 		INTERRUPT_CYCLE_COUNT :: 7
 		// the pushed PC is expected to point to the next
 		// instruction to be executed
-		if console.cpu.reset {
+		//
+		// interrupt priority from higest to lowest: resest, brk, nmi, irq
+		switch console.cpu.interrupt {
+		case .Reset:
 			lo := console_mem_read_from_address(console, 0xfffc) or_return
 			hi := console_mem_read_from_address(console, 0xfffd) or_return
 			console.cpu.pc = (u16(hi) << 8 | u16(lo))
-			console.stalls = INTERRUPT_CYCLE_COUNT
-			return
-		}
-
-		// BRK is handled as a regular instruction
-		if instruction.type == .BRK do break handle_interrupts
-
-		if console.cpu.nmi {
+			cycles += INTERRUPT_CYCLE_COUNT
+		case .NMI:
+			if instruction.type == .BRK do break handle_interrupts
 			pc_to_push := start_pc
 			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
 			cpu_stack_push(console, u8(pc_to_push)) or_return
@@ -248,12 +261,8 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 			hi := console_mem_read_from_address(console, 0xfffb) or_return
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
-			console.stalls = INTERRUPT_CYCLE_COUNT
-			return
-
-		}
-
-		if console.cpu.irq {
+			cycles += INTERRUPT_CYCLE_COUNT
+		case .IRQ:
 			if .IF in console.cpu.status do break handle_interrupts
 			// same as for NMI onli different interrupt vector
 			pc_to_push := start_pc
@@ -265,14 +274,13 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 			hi := console_mem_read_from_address(console, 0xffff) or_return
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
-			console.stalls = INTERRUPT_CYCLE_COUNT
-			return
+			cycles += INTERRUPT_CYCLE_COUNT
+		case .None:
 		}
 	}
 
 	execute_instruction: {
-		console.stalls = instruction.cycle_count - 1
-		console.cycles += 1
+		cycles += instruction.cycle_count
 
 		// pre-calculate address for modes that need it
 		#partial switch instruction.addressing_mode {
@@ -284,7 +292,7 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 				instruction.addressing_mode,
 			) or_return
 			if page_crossed {
-				console.stalls += instruction.page_boundary_extra_cycles
+				cycles += instruction.page_boundary_extra_cycles
 			}
 		}
 
@@ -620,9 +628,6 @@ console_cpu_step :: proc(console: ^Console) -> (instruction: Instruction, error:
 		// They will act like NOPs and just increment the PC.
 		}
 
-		if !pc_incremented {
-			console.cpu.pc = start_pc + u16(instruction.byte_size)
-		}
 
 		return
 	}
