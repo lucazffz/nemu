@@ -11,6 +11,7 @@ pkgs.mkShell {
     ols
     glsl_analyzer
     git
+    cc65
   ];
 
   buildInputs = with pkgs; [

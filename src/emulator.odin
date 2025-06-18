@@ -3,6 +3,8 @@ package nemu
 // the hell out, yes it took days to realize...
 
 import "base:runtime"
+import "core:fmt"
+import "core:log"
 import "core:math"
 import "utils"
 
@@ -13,24 +15,26 @@ Console :: struct {
 	apu:    APU,
 	// 2 KB of internal ram ($0000 - $07FF)
 	ram:    []u8,
-	cycles: int,
-	stalls: int,
+	// cycles: int,
+	// stalls: int,
+	mapper: ^Mapper,
 }
 
 // For documentation regarding the CPU, please refer to:
 // https://www.cpcwiki.eu/index.php/MOS_6505
 CPU :: struct {
-	x:            u8,
-	y:            u8,
-	acc:          u8,
-	status:       bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
-	interrupt:    Hardware_Interrupt,
+	x:                 u8,
+	y:                 u8,
+	acc:               u8,
+	status:            bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
+	interrupt:         Hardware_Interrupt,
 	// stack is located in page 1 ($0100-$01FF), sp is offset to this base
-	sp:           u8,
-	pc:           u16,
-	cycle_count:  int,
-	stall_count:  int,
-	decmial_mode: bool,
+	sp:                u8,
+	pc:                u16,
+	cycle_count:       int,
+	stall_count:       int,
+	instruction_count: int,
+	decmial_mode:      bool,
 }
 
 PAGE_1_ADDRESS :: 0x0100
@@ -41,13 +45,11 @@ PPU :: struct {
 APU :: struct {
 }
 
-// MEM :: struct {
-// }
-
 Memory_Error :: enum {
 	None,
 	Invalid_Address,
 	Read_Only,
+	Out_Of_Memory,
 }
 
 // NF - Negative Flag         : 1 when result is negative
@@ -62,8 +64,8 @@ Processor_Status_Flags :: enum {
 	ZF, // bit 1
 	IF, // bit 2
 	DF, // bit 3
-	BF, // bit 4
-	_5, // bit 5 (unused, always 1)
+	// BF, // bit 4 
+	// _5, // bit 5
 	VF, // bit 6
 	NF, // bit 7
 }
@@ -176,7 +178,7 @@ Instruction_Addressing_Mode :: enum {
 Instruction_Category :: enum {
 	Legal,
 	Illegal,
-	Unstable,
+	// Unstable,
 }
 
 Hardware_Interrupt :: enum {
@@ -206,7 +208,22 @@ get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 	}
 }
 
+/*
+Execute a single CPU instruction
 
+If an hardware-interrupt is set, the interurpt will be handled instead.
+The interrupt will be cleared (set to Hardware_Interrupt.None) automatically.
+
+**An error will leave the console in an invalid state**
+
+Inputs:
+- console: The console to operate on
+
+Returns:
+- cycles: The number of cycles the instruction took to execute
+- instruction: The executed instruction
+- error: Memory error caused by writing/reading to/from an invalid address
+*/
 @(require_results)
 console_cpu_step :: proc(
 	console: ^Console,
@@ -215,8 +232,8 @@ console_cpu_step :: proc(
 	instruction: Instruction,
 	error: Memory_Error,
 ) {
-	if console.stalls > 0 {
-		console.stalls -= 1
+	if console.cpu.stall_count > 0 {
+		console.cpu.stall_count -= 1
 		return
 	}
 
@@ -225,19 +242,23 @@ console_cpu_step :: proc(
 	pc_incremented := false
 	start_pc := console.cpu.pc
 
-	defer {
-		// branch, jump and some other instructions will directly set PC
-		if !pc_incremented {
-			console.cpu.pc = start_pc + u16(instruction.byte_size)
-		}
+	// --- Handle interrupt ---
 
-		console.cycles += cycles
+	defer {
+		if error == nil {
+			// branch, jump and some other instructions will directly set PC
+			if !pc_incremented {
+				console.cpu.pc = start_pc + u16(instruction.byte_size)
+			}
+
+			console.cpu.cycle_count += cycles
+			console.cpu.interrupt = .None
+		}
 	}
 
 	opcode := console_mem_read_from_address(console, start_pc) or_return
 	instruction = get_instruction_from_opcode(opcode)
-
-	// @todo: handle interrupt hijacking
+	// @todo handle interrupt hijacking
 	handle_interrupts: {
 		INTERRUPT_CYCLE_COUNT :: 7
 		// the pushed PC is expected to point to the next
@@ -250,6 +271,8 @@ console_cpu_step :: proc(
 			hi := console_mem_read_from_address(console, 0xfffd) or_return
 			console.cpu.pc = (u16(hi) << 8 | u16(lo))
 			cycles += INTERRUPT_CYCLE_COUNT
+			pc_incremented = true
+			return
 		case .NMI:
 			if instruction.type == .BRK do break handle_interrupts
 			pc_to_push := start_pc
@@ -262,7 +285,10 @@ console_cpu_step :: proc(
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
 			cycles += INTERRUPT_CYCLE_COUNT
+			pc_incremented = true
+			return
 		case .IRQ:
+			if instruction.type == .BRK do break handle_interrupts
 			if .IF in console.cpu.status do break handle_interrupts
 			// same as for NMI onli different interrupt vector
 			pc_to_push := start_pc
@@ -275,16 +301,33 @@ console_cpu_step :: proc(
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
 			cycles += INTERRUPT_CYCLE_COUNT
+			pc_incremented = true
+			return
 		case .None:
 		}
 	}
 
+	// --- Execute instruction ---
+
+	defer {
+		if error == nil {
+			// log.infof(
+			// 	"[%03d] opcode %02x: %s",
+			// 	console.cpu.instruction_count,
+			// 	opcode,
+			// 	instruction_to_string(instruction),
+			// )
+
+			cycles += instruction.cycle_count
+			console.cpu.instruction_count += 1
+		}
+	}
+
 	execute_instruction: {
-		cycles += instruction.cycle_count
 
 		// pre-calculate address for modes that need it
 		#partial switch instruction.addressing_mode {
-		case .Immediate, .Accumulator, .Implied, .Relative:
+		case .Accumulator, .Implied, .Relative:
 		// no address to fetch
 		case:
 			operand_addr, page_crossed = get_operand_address(
@@ -295,6 +338,12 @@ console_cpu_step :: proc(
 				cycles += instruction.page_boundary_extra_cycles
 			}
 		}
+
+		// if instruction.addressing_mode == .Zeropage_X {
+		// 	fmt.printfln("op addr: %02x", operand_addr)
+
+		// }
+
 
 		#partial switch instruction.type {
 		// === Arithmetic and Logical ===
@@ -421,8 +470,8 @@ console_cpu_step :: proc(
 				cpu_set_zn(console, val)
 			}
 		case .ROL:
-			console.cpu.status -= {.CF}
 			c := u8(.CF in console.cpu.status)
+			console.cpu.status -= {.CF}
 			if instruction.addressing_mode == .Accumulator {
 				if console.cpu.acc & 0x80 != 0 do console.cpu.status += {.CF}
 				console.cpu.acc = (console.cpu.acc << 1) | c
@@ -435,8 +484,8 @@ console_cpu_step :: proc(
 				cpu_set_zn(console, val)
 			}
 		case .ROR:
-			console.cpu.status -= {.CF}
 			c := u8(.CF in console.cpu.status) << 7
+			console.cpu.status -= {.CF}
 			if instruction.addressing_mode == .Accumulator {
 				if console.cpu.acc & 0x01 != 0 do console.cpu.status += {.CF}
 				console.cpu.acc = (console.cpu.acc >> 1) | c
@@ -632,21 +681,19 @@ console_cpu_step :: proc(
 		return
 	}
 
-	is_page_crossed :: proc(address1, address2: u16) -> bool {
-		return address1 & 0xff00 != address2 & 0xff00
-	}
 
 	@(require_results)
 	cpu_stack_push :: proc(console: ^Console, data: u8) -> Memory_Error {
-		console_mem_write_to_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp), data) or_return
+		err := console_mem_write_to_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp), data)
 		console.cpu.sp -= 1
-		return .None
+		return err
 	}
 
 	@(require_results)
 	cpu_stack_pull :: proc(console: ^Console) -> (u8, Memory_Error) {
 		console.cpu.sp += 1
-		return console_mem_read_from_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp))
+		data, err := console_mem_read_from_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp))
+		return data, err
 	}
 
 	cpu_set_zn :: proc(console: ^Console, data: u8) {
@@ -659,13 +706,13 @@ console_cpu_step :: proc(
 	@(require_results)
 	branch :: proc(console: ^Console, condition: bool) -> Memory_Error {
 		if condition {
-			console.stalls += 1
+			console.cpu.cycle_count += 1
 			rel_addr := console_mem_read_from_address(console, console.cpu.pc + 1) or_return
 			// + 2 to point to next instruction
 			jump_addr := u16(i16(console.cpu.pc) + 2 + i16(i8(rel_addr)))
 
 			if is_page_crossed(console.cpu.pc + 2, jump_addr) {
-				console.stalls += 1 // page cross adds another cycle
+				console.cpu.cycle_count += 1 // page cross adds another cycle
 			}
 			console.cpu.pc = jump_addr
 		} else {
@@ -675,117 +722,127 @@ console_cpu_step :: proc(
 		return .None
 	}
 
-	// sets _5 and BF to 1
-	status_flags_to_byte :: proc(flags: bit_set[Processor_Status_Flags], set_BF := true) -> u8 {
-		return(
-			(u8(.NF in flags) << 7) |
-			(u8(.VF in flags) << 6) |
-			(u8(1 << 5)) |
-			(u8(set_BF) << 4) |
-			(u8(.DF in flags) << 3) |
-			(u8(.IF in flags) << 2) |
-			(u8(.ZF in flags) << 1) |
-			(u8(.CF in flags) << 0) \
-		)
-	}
-
-	// sets _5 and BF to 1
-	status_flags_from_byte :: proc(byte: u8) -> (flags: bit_set[Processor_Status_Flags]) {
-		// bit BF and _5 (unused) are ignored
-		if byte & 0x80 == 1 do flags += {.NF}
-		if byte & 0x40 == 1 do flags += {.VF}
-		if byte & 0x08 == 1 do flags += {.DF}
-		if byte & 0x04 == 1 do flags += {.IF}
-		if byte & 0x02 == 1 do flags += {.ZF}
-		if byte & 0x01 == 1 do flags += {.CF}
-		return
-	}
-
-	// calculate the effective address for an instruction and checks for page crossing
-	// assumes that pc is pointing to opcode
-	@(require_results)
-	get_operand_address :: proc(
-		console: ^Console,
-		mode: Instruction_Addressing_Mode,
-	) -> (
-		return_addr: u16,
-		page_crossed: bool,
-		error: Memory_Error,
-	) {
-		// system is little endian so low byte is stored first in memory
-
-		cpu := &console.cpu
-		switch mode {
-		case .Immediate:
-			return cpu.pc + 1, false, .None
-		case .Zeropage:
-			zp_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			return_addr = u16(zp_addr)
-		case .Zeropage_X:
-			// overflow is ignored so 0x00ff (address) + 1 (X or Y) will cause
-			// wraparound ensuring that the address is always contained within
-			// the zeropage
-			base_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			return_addr := u16(base_addr + cpu.x) // emulate overflow properly
-		case .Zeropage_Y:
-			base_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			return_addr = u16(base_addr + cpu.y)
-		case .Absolute:
-			lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
-			return_addr = (u16(hi) << 8) | u16(lo)
-		case .Absolute_X:
-			lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
-			base_addr := (u16(hi) << 8) | u16(lo)
-			return_addr = base_addr + u16(cpu.x)
-			page_crossed = is_page_crossed(base_addr, return_addr)
-		case .Absolute_Y:
-			lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
-			base_addr := (u16(hi) << 8) | u16(lo)
-			return_addr = base_addr + u16(cpu.y)
-			page_crossed = is_page_crossed(base_addr, return_addr)
-		case .Indirect:
-			// the infamous JMP indirect bug: if the low byte of the address vector
-			// is 0xFF, due to incorrect wraparound the high byte is fetched
-			// from the start of the same page, not the next one.
-			lo_ptr := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			hi_ptr := console_mem_read_from_address(console, cpu.pc + 2) or_return
-			ptr := (u16(hi_ptr) << 8) | u16(lo_ptr)
-			lo := console_mem_read_from_address(console, ptr) or_return
-			hi_ptr_buggy := (ptr & 0xff00) | u16(u8(ptr + 1)) // emulate overflow
-			hi := console_mem_read_from_address(console, hi_ptr_buggy) or_return
-			return_addr = (u16(hi) << 8) | u16(lo)
-		case .Zeropage_Indirect_X:
-			zp_base := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			ptr := zp_base + cpu.x
-			lo := console_mem_read_from_address(console, u16(ptr)) or_return
-			hi := console_mem_read_from_address(console, u16(ptr + 1)) or_return
-			return_addr = (u16(hi) << 8) | u16(lo)
-		case .Zeropage_Indirect_Y:
-			// zp_ptr, lo, hi: u8
-			// error: Memory_Error
-			zp_ptr := console_mem_read_from_address(console, cpu.pc + 1) or_return
-			lo := console_mem_read_from_address(console, u16(zp_ptr)) or_return
-			hi := console_mem_read_from_address(console, u16(zp_ptr + 1)) or_return
-			base_addr := (u16(hi) << 8) | u16(lo)
-			return_addr = base_addr + u16(cpu.y)
-			page_crossed = is_page_crossed(base_addr, return_addr)
-		case .Implied, .Accumulator, .Relative:
-		// Implied, Accumulator, and Relative modes don't use this function.
-		}
-
-		return
-	}
-}
-
-console_cpu_reset :: proc(console: ^Console) -> Memory_Error {
-
-	return .None
 
 }
 
+is_page_crossed :: proc(address1, address2: u16) -> bool {
+	return address1 & 0xff00 != address2 & 0xff00
+}
+
+// calculate the effective address for an instruction and checks for page crossing
+// assumes that pc is pointing to opcode
+@(require_results)
+get_operand_address :: proc(
+	console: ^Console,
+	mode: Instruction_Addressing_Mode,
+) -> (
+	return_addr: u16,
+	page_crossed: bool,
+	error: Memory_Error,
+) {
+	// system is little endian so low byte is stored first in memory
+
+	cpu := &console.cpu
+	switch mode {
+	case .Immediate:
+		return_addr = cpu.pc + 1
+	case .Zeropage:
+		zp_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		return_addr = u16(zp_addr)
+	case .Zeropage_X:
+		// overflow is ignored so 0x00ff (address) + 1 (X or Y) will cause
+		// wraparound ensuring that the address is always contained within
+		// the zeropage
+		base_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		// fmt.printfln("zero page base addr: %02x", base_addr)
+		// fmt.printfln("zero page addr: %02x", u16(base_addr + cpu.x))
+		return_addr = u16(base_addr + cpu.x) // emulate overflow properly
+	case .Zeropage_Y:
+		base_addr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		return_addr = u16(base_addr + cpu.y)
+	case .Absolute:
+		lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
+		return_addr = (u16(hi) << 8) | u16(lo)
+	case .Absolute_X:
+		lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
+		base_addr := (u16(hi) << 8) | u16(lo)
+		return_addr = base_addr + u16(cpu.x)
+		page_crossed = is_page_crossed(base_addr, return_addr)
+	case .Absolute_Y:
+		lo := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		hi := console_mem_read_from_address(console, cpu.pc + 2) or_return
+		base_addr := (u16(hi) << 8) | u16(lo)
+		return_addr = base_addr + u16(cpu.y)
+		page_crossed = is_page_crossed(base_addr, return_addr)
+	case .Indirect:
+		// the infamous JMP indirect bug: if the low byte of the address vector
+		// is 0xFF, due to incorrect wraparound the high byte is fetched
+		// from the start of the same page, not the next one.
+		lo_ptr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		hi_ptr := console_mem_read_from_address(console, cpu.pc + 2) or_return
+		ptr := (u16(hi_ptr) << 8) | u16(lo_ptr)
+		lo := console_mem_read_from_address(console, ptr) or_return
+		hi_ptr_buggy := (ptr & 0xff00) | u16(u8(ptr + 1)) // emulate overflow
+		hi := console_mem_read_from_address(console, hi_ptr_buggy) or_return
+		return_addr = (u16(hi) << 8) | u16(lo)
+	case .Zeropage_Indirect_X:
+		zp_base := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		ptr := zp_base + cpu.x
+		lo := console_mem_read_from_address(console, u16(ptr)) or_return
+		hi := console_mem_read_from_address(console, u16(ptr + 1)) or_return
+		return_addr = (u16(hi) << 8) | u16(lo)
+	case .Zeropage_Indirect_Y:
+		// zp_ptr, lo, hi: u8
+		// error: Memory_Error
+		zp_ptr := console_mem_read_from_address(console, cpu.pc + 1) or_return
+		lo := console_mem_read_from_address(console, u16(zp_ptr)) or_return
+		hi := console_mem_read_from_address(console, u16(zp_ptr + 1)) or_return
+		base_addr := (u16(hi) << 8) | u16(lo)
+		return_addr = base_addr + u16(cpu.y)
+		page_crossed = is_page_crossed(base_addr, return_addr)
+	case .Implied, .Accumulator, .Relative:
+	// Implied, Accumulator, and Relative modes don't use this function.
+	}
+
+	return
+}
+
+// sets _5 and BF to 1
+status_flags_to_byte :: proc(flags: bit_set[Processor_Status_Flags], set_BF := true) -> u8 {
+	return(
+		(u8(.NF in flags) << 7) |
+		(u8(.VF in flags) << 6) |
+		(u8(1 << 5)) |
+		(u8(set_BF) << 4) |
+		(u8(.DF in flags) << 3) |
+		(u8(.IF in flags) << 2) |
+		(u8(.ZF in flags) << 1) |
+		(u8(.CF in flags) << 0) \
+	)
+}
+
+status_flags_from_byte :: proc(byte: u8) -> (flags: bit_set[Processor_Status_Flags]) {
+	// When pulled (PLP, RTI), bit 5 is always forced to 1, and bit 4 (BF) is forced to 0.
+	// Other flags are set directly from the byte.
+
+	// Initialize flags with ._5 set. Bit 5 is always 1 on PLP/RTI.
+	// flags = {._5}
+
+
+	// Set other flags based on the corresponding bits in the byte.
+	// Bit 4 (BF) is intentionally ignored from the 'byte' value, as it's forced to 0 by hardware on PLP/RTI.
+	if (byte & (1 << 7)) != 0 do flags += {.NF}
+	if (byte & (1 << 6)) != 0 do flags += {.VF}
+	// Bit 5 is already handled by the `flags = {._5}` initialization.
+	// Bit 4 (BF) is not set from the byte, effectively forcing it to 0.
+	if (byte & (1 << 3)) != 0 do flags += {.DF}
+	if (byte & (1 << 2)) != 0 do flags += {.IF}
+	if (byte & (1 << 1)) != 0 do flags += {.ZF}
+	if (byte & (1 << 0)) != 0 do flags += {.CF}
+	return
+}
 
 // allocate memory for console
 // will not initialize default values, use console_init
@@ -805,14 +862,29 @@ console_make :: proc(
 	return
 }
 
-// initialize default console values
+// initialize default console values on startup
 // will not allocate memory, use console_make
 console_init :: proc(console: ^Console) {
-	console.cpu.sp = 0xFD // Initial stack pointer state after reset
-	console.cpu.status = {.IF} // Initial flags state
-	// In a real NES, the PC would be set from the reset vector ($FFFC/D)
-	// For now, we can set it to a test location.
-	console.cpu.pc = 0xC000
+	console.cpu = {
+		x      = 0,
+		y      = 0,
+		acc    = 0,
+		sp     = 0xfd,
+		pc     = 0xc000,
+		status = {.IF},
+	}
+}
+
+@(require_results)
+console_cpu_reset :: proc(console: ^Console, reset_vector: u16) -> Memory_Error {
+	lo := u8(reset_vector)
+	hi := u8(reset_vector >> 8)
+	console_mem_write_to_address(console, 0xfffc, lo) or_return
+	console_mem_write_to_address(console, 0xfffd, hi) or_return
+
+	console.cpu.interrupt = .Reset
+	_, _, error := console_cpu_step(console)
+	return error
 }
 
 // free memory allocated to console
@@ -830,23 +902,81 @@ console_delete :: proc(
 @(private = "file")
 CPU_INTERNAL_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1FFF, .Closed} // 2KB ram mirrored 4 times
 
+
 @(require_results)
 console_mem_write_to_address :: proc(console: ^Console, address: u16, data: u8) -> Memory_Error {
-	if !utils.interval_contains(CPU_INTERNAL_RAM_INTERVAL, address) {
+	switch address {
+	case 0x0000 ..< 0x2000:
+		// cpu internal RAM, 2 KB
+		// RAM is mirrored every 2 KB from $0800-$1fff
+		address := address % 0x0800
+		console.ram[address] = data
+	case 0x2000 ..< 4000:
+		// PPU I/O registers
+		// registers are mirrored every 8 bytes from $2008-$3fff
+		address := address % 8
+	case 0x4000 ..< 4020:
+	// APU and I/O registers
+	case 4020 ..< 6000:
+		// expansion ROM
+		assert(false, "expansion ROM not supported")
+	case 6000 ..< 0xffff:
+		// mapper
+		console.mapper->write_to_address(address, data) or_return
+	case:
 		return .Invalid_Address
 	}
 
-	console.ram[address] = data
 	return .None
 }
 
 
 @(require_results)
-console_mem_read_from_address :: proc(console: ^Console, address: u16) -> (u8, Memory_Error) {
-	if !utils.interval_contains(CPU_INTERNAL_RAM_INTERVAL, address) {
-		return 0, .Invalid_Address
+console_mem_read_from_address :: proc(
+	console: ^Console,
+	address: u16,
+) -> (
+	data: u8,
+	error: Memory_Error,
+) {
+	switch address {
+	case 0x0000 ..< 0x2000:
+		// cpu internal RAM, 2 KB
+		// RAM is mirrored every 2 KB from $0800-$1fff
+		address := address % 0x0800
+		data = console.ram[address]
+	// fmt.printf("%02x ", address)
+	// fmt.print(data)
+	case 0x2000 ..< 4000:
+		// PPU I/O registers
+		// registers are mirrored every 8 bytes from $2008-$3fff
+		address := address % 8
+	case 0x4000 ..< 4020:
+	// APU and I/O registers
+	case 4020 ..< 6000:
+		// expansion ROM
+		assert(false, "expansion ROM not supported")
+	case 6000 ..< 0xffff:
+		// mapper
+		data = console.mapper->read_from_address(address) or_return
+	case:
+		error = .Invalid_Address
 	}
 
-	return console.ram[address], .None
+	return
+}
+
+
+instruction_to_string :: proc(instruction: Instruction) -> string {
+	i := instruction
+	return fmt.tprintf(
+		"(%s) B:%d C:%d PB:%d %7s %s",
+		i.type,
+		i.byte_size,
+		i.cycle_count,
+		i.page_boundary_extra_cycles,
+		i.category,
+		i.addressing_mode,
+	)
 }
 

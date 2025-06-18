@@ -1,16 +1,18 @@
 package nemu
 
-import runtime "base:runtime"
-import fmt "core:fmt"
-import log "core:log"
-import mem "core:mem"
-import strings "core:strings"
+import "base:runtime"
+import "core:fmt"
+import "core:log"
+import "core:mem"
+import "core:os"
+import "core:strings"
 
 ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, "./assets")
 
 default_context: runtime.Context
 
 console: ^Console
+
 
 main :: proc() {
 	logger := log.create_console_logger(.Info)
@@ -52,18 +54,48 @@ main :: proc() {
 
 	default_context = context
 
-	// instruction := get_instruction_from_opcode(0x1e)
-	// fmt.println(instruction)
-
-	console = console_make()
+	console := console_make()
 	console_init(console)
+	mapper := mapper_make()
+	defer console_delete(console)
+	defer mapper_delete(mapper)
 
-	rel_addr := u8(0xFD)
-	jump_addr := u16(i16(console.cpu.pc) + 2 + i16(i8(rel_addr)))
+	console.mapper = mapper
 
-	fmt.println(console.cpu.pc)
-	fmt.println(jump_addr)
 
-	console_delete(console)
+	if file, err := os.read_entire_file_or_err("../test_roms/cpu_test/nestest.nes"); err != nil {
+		fmt.eprintln("could not read file: %s", err)
+	} else {
+		defer delete(file)
+		if variant, ok := ines_determine_format_variant_from_bytes(file); ok {
+			rom := ines_nes20_from_bytes(file)
+			mapper->fill_from_ines_rom(rom)
+
+		} else {
+			fmt.eprintln("file not .nes file")
+		}
+
+
+	}
+
+
+	error := console_cpu_reset(console, 0xc000)
+	fmt.println(console.cpu.status)
+	fmt.printfln("%x", status_flags_to_byte(console.cpu.status, false))
+	assert(error == nil, "shit")
+	// fmt.printfln("%x", console.cpu.pc)
+	// fmt.println(console.cpu.cycle_count)
+
+	for i := 0; i < 8900; i += 1 {
+		instr, cycles, error := console_cpu_step(console)
+		if error != nil {
+			fmt.eprintln(error)
+			return
+		}
+
+	}
+
+	fmt.println(console.cpu.cycle_count)
+	fmt.printfln("%x", status_flags_to_byte(console.cpu.status, false))
 }
 
