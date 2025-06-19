@@ -27,7 +27,7 @@ mapper_make_from_ines :: proc(
 	err: runtime.Allocator_Error,
 ) #optional_allocator_error {
 
-	prg_mirrored := ines.header.prg_rom_size == 1 * 16 * 1024 ? true : false
+	prg_mirrored := ines.header.prg_rom_size == 1 ? true : false
 	mapper_number := ines.header.mapper_number
 
 	switch mapper_number {

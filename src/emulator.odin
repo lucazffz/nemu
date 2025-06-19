@@ -891,16 +891,16 @@ console_make :: proc(
 
 console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
 	console.cpu = {
-		x      = 0,
-		y      = 0,
-		acc    = 0,
-		sp     = 0xfd,
-		pc     = 0xc000,
-		status = {.IF},
-		interrupt = .None,
+		x                 = 0,
+		y                 = 0,
+		acc               = 0,
+		sp                = 0xfd,
+		pc                = 0xc000,
+		status            = {.IF},
+		interrupt         = .None,
 		instruction_count = 0,
-		cycle_count = 0,
-		stall_count = 0
+		cycle_count       = 0,
+		stall_count       = 0,
 	}
 
 	console.mapper = mapper

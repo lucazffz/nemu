@@ -84,11 +84,6 @@ iNES_NES_FILE_VARIANT :: enum {
 	NES_20,
 }
 
-// ines_ines_from_bytes :: proc(data: []byte) -> iNES {
-
-// 	return {}
-
-// }
 
 get_ines_from_bytes :: proc(data: []byte) -> NES20 {
 	header := NES20_Header{}
@@ -100,9 +95,9 @@ get_ines_from_bytes :: proc(data: []byte) -> NES20 {
 	if prg_rom_size_msb == 0xff {
 		multiplier := int(prg_rom_size_lsb & 0x03)
 		exponent := uint(prg_rom_size_lsb & 0xfc)
-		header.prg_rom_size = (multiplier * 2 + 1) * (1 << exponent) * 16 * 1024
+		header.prg_rom_size = (multiplier * 2 + 1) * (1 << exponent)
 	} else {
-		header.prg_rom_size = int((prg_rom_size_msb << 4) | prg_rom_size_lsb) * 16 * 1024
+		header.prg_rom_size = int((prg_rom_size_msb << 4) | prg_rom_size_lsb)
 	}
 
 
@@ -113,9 +108,9 @@ get_ines_from_bytes :: proc(data: []byte) -> NES20 {
 	if chr_rom_size_msb == 0xff {
 		multiplier := int(chr_rom_size_lsb & 0x03)
 		exponent := uint(chr_rom_size_lsb & 0xfc)
-		header.chr_rom_size = (multiplier * 2 + 1) * (1 << exponent) * 16 * 1024
+		header.chr_rom_size = (multiplier * 2 + 1) * (1 << exponent)
 	} else {
-		header.chr_rom_size = int((chr_rom_size_msb << 4) | chr_rom_size_lsb) * 16 * 1024
+		header.chr_rom_size = int((chr_rom_size_msb << 4) | chr_rom_size_lsb)
 	}
 
 	header.nametable_arrangement = (data[6] & 0x01) == 1 ? .Horizontal : .Vertical
@@ -166,11 +161,13 @@ get_ines_from_bytes :: proc(data: []byte) -> NES20 {
 	header.miscellaneous_roms_num = int(data[14] & 0x3)
 	header.default_expansion_device = int(data[15] & 0x3f)
 
+	prg_rom_size_bytes := header.prg_rom_size * 16 * 1024
+
 	// body
 	trainer_base := 16
 	// assuming no trainer area
 	prg_rom_base := 16
-	chr_rom_base := 16 + header.prg_rom_size
+	chr_rom_base := 16 + prg_rom_size_bytes
 	nes := NES20{}
 	nes.header = header
 	if header.trainer_present {
@@ -179,7 +176,7 @@ get_ines_from_bytes :: proc(data: []byte) -> NES20 {
 		chr_rom_base += 512
 	}
 
-	nes.prg_rom = data[prg_rom_base:prg_rom_base + header.prg_rom_size]
+	nes.prg_rom = data[prg_rom_base:prg_rom_base + prg_rom_size_bytes]
 	// nes.chr_rom = data[chr_rom_base:chr_rom_base + header.chr_rom_size]
 
 	return nes
