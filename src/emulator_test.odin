@@ -17,8 +17,8 @@ fail :: proc(t: ^testing.T, msg: string, loc := #caller_location) {
 	}
 }
 
-failf :: proc(t: ^testing.T, format: string, args: ..any, loc := #caller_location) {
-	log.errorf(format, ..args, location = loc)
+failf :: proc(t: ^testing.T, format: string, args: ..any, location := #caller_location) {
+	log.errorf(format, ..args, location = location)
 }
 
 
@@ -46,7 +46,8 @@ test_cpu :: proc(t: ^testing.T) {
 	mapper->fill_from_ines_rom(rom)
 
 	if err := console_cpu_reset(console, 0xc000); err != nil {
-		failf(t, "FAIL: could not reset CPU, %v", err)
+		err := err.?
+		failf(t, "FAIL: could not reset CPU, %v", err.type, location = err.loc)
 		return
 
 	}
@@ -61,12 +62,14 @@ test_cpu :: proc(t: ^testing.T) {
 		}
 
 		if _, instr, err := console_cpu_step(console); err != nil {
+			err := err.?
 			failf(
 				t,
 				"FAIL: error executing instruction %d (%s) \n state: %s",
 				console.cpu.instruction_count + 1,
-				err,
+				err.type,
 				console_state_to_string(console),
+				location = err.loc,
 			)
 
 			return
@@ -77,7 +80,8 @@ test_cpu :: proc(t: ^testing.T) {
 
 	// legal instructions
 	if status_byte, err := console_read_from_address(console, 0x0003); err != nil {
-		failf(t, "FAIL: error reading test status byte at $0002, %v", err)
+		err := err.?
+		failf(t, "FAIL: error reading test status byte at $0002, %v", err.type, location = err.loc)
 		return
 	} else {
 		testing.expectf(
@@ -90,7 +94,8 @@ test_cpu :: proc(t: ^testing.T) {
 
 	// illegal instructions
 	if status_byte, err := console_read_from_address(console, 0x0002); err != nil {
-		failf(t, "FAIL: error reading test status byte at $0003, %v", err)
+		err := err.?
+		failf(t, "FAIL: error reading test status byte at $0003, %v", err.type, location = err.loc)
 		return
 	} else {
 		testing.expectf(

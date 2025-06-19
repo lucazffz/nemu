@@ -3,10 +3,10 @@ package nemu
 // the hell out, yes it took days to realize...
 
 import "base:runtime"
-import "core:strings"
 import "core:fmt"
 import "core:log"
 import "core:math"
+import "core:strings"
 import "utils"
 
 
@@ -46,12 +46,6 @@ PPU :: struct {
 APU :: struct {
 }
 
-Memory_Error :: enum {
-	None,
-	Invalid_Address,
-	Read_Only,
-	Out_Of_Memory,
-}
 
 // NF - Negative Flag         : 1 when result is negative
 // VF - Overflow Flag         : 1 on signed overflow
@@ -231,7 +225,7 @@ console_cpu_step :: proc(
 ) -> (
 	cycles: int,
 	instruction: Instruction,
-	error: Memory_Error,
+	err: Maybe(Error),
 ) {
 	if console.cpu.stall_count > 0 {
 		console.cpu.stall_count -= 1
@@ -246,7 +240,7 @@ console_cpu_step :: proc(
 	// --- Handle interrupt ---
 
 	defer {
-		if error == nil {
+		if err == nil {
 			// branch, jump and some other instructions will directly set PC
 			if !pc_incremented {
 				console.cpu.pc = start_pc + u16(instruction.byte_size)
@@ -268,8 +262,11 @@ console_cpu_step :: proc(
 		// interrupt priority from higest to lowest: resest, brk, nmi, irq
 		switch console.cpu.interrupt {
 		case .Reset:
-			lo := console_read_from_address(console, 0xfffc) or_return
-			hi := console_read_from_address(console, 0xfffd) or_return
+			lo, hi: u8;e: Maybe(Error)
+			lo, e = console_read_from_address(console, 0xfffc)
+			hi, e = console_read_from_address(console, 0xfffd)
+			if e != nil do err = errorf(e.?.type, "cannot read reset vector at $FFFC, $FFFD")
+
 			console.cpu.pc = (u16(hi) << 8 | u16(lo))
 			cycles += INTERRUPT_CYCLE_COUNT
 			pc_incremented = true
@@ -281,8 +278,12 @@ console_cpu_step :: proc(
 			cpu_stack_push(console, u8(pc_to_push)) or_return
 			status_byte := status_flags_to_byte(console.cpu.status, false)
 			cpu_stack_push(console, status_byte) or_return
-			lo := console_read_from_address(console, 0xfffa) or_return
-			hi := console_read_from_address(console, 0xfffb) or_return
+
+			lo, hi: u8;e: Maybe(Error)
+			lo, e = console_read_from_address(console, 0xfffa)
+			hi, e = console_read_from_address(console, 0xfffb)
+			if e != nil do err = errorf(e.?.type, "cannot read NMI vector at $FFFA, $FFFB")
+
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
 			cycles += INTERRUPT_CYCLE_COUNT
@@ -297,8 +298,12 @@ console_cpu_step :: proc(
 			cpu_stack_push(console, u8(pc_to_push)) or_return
 			status_byte := status_flags_to_byte(console.cpu.status, false)
 			cpu_stack_push(console, status_byte) or_return
-			lo := console_read_from_address(console, 0xfffe) or_return
-			hi := console_read_from_address(console, 0xffff) or_return
+
+			lo, hi: u8;e: Maybe(Error)
+			lo, e = console_read_from_address(console, 0xfffe)
+			hi, e = console_read_from_address(console, 0xffff)
+			if e != nil do err = errorf(e.?.type, "cannot read IRQ vector at $FFFE, $FFFF")
+
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
 			cycles += INTERRUPT_CYCLE_COUNT
@@ -311,7 +316,7 @@ console_cpu_step :: proc(
 	// --- Execute instruction ---
 
 	defer {
-		if error == nil {
+		if err == nil {
 			// log.infof(
 			// 	"[%03d] opcode %02x: %s",
 			// 	console.cpu.instruction_count,
@@ -697,17 +702,19 @@ console_cpu_step :: proc(
 
 
 	@(require_results)
-	cpu_stack_push :: proc(console: ^Console, data: u8) -> Memory_Error {
+	cpu_stack_push :: proc(console: ^Console, data: u8) -> Maybe(Error) {
 		err := console_write_to_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp), data)
+		if err != nil do return errorf(err.?.type, "cannot push '%02X' to stack at SP=$%04X", data, console.cpu.sp)
 		console.cpu.sp -= 1
-		return err
+		return nil
 	}
 
 	@(require_results)
-	cpu_stack_pull :: proc(console: ^Console) -> (u8, Memory_Error) {
+	cpu_stack_pull :: proc(console: ^Console) -> (u8, Maybe(Error)) {
 		console.cpu.sp += 1
 		data, err := console_read_from_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp))
-		return data, err
+		if err != nil do return 0, errorf(err.?.type, "cannot pull from stack at SP=$%04X", console.cpu.sp)
+		return data, nil
 	}
 
 	cpu_set_zn :: proc(console: ^Console, data: u8) {
@@ -718,7 +725,7 @@ console_cpu_step :: proc(
 
 	// branch handles the logic for all conditional branch instructions
 	@(require_results)
-	branch :: proc(console: ^Console, condition: bool) -> Memory_Error {
+	branch :: proc(console: ^Console, condition: bool) -> Maybe(Error) {
 		if condition {
 			console.cpu.cycle_count += 1
 			rel_addr := console_read_from_address(console, console.cpu.pc + 1) or_return
@@ -733,10 +740,8 @@ console_cpu_step :: proc(
 			console.cpu.pc += 2
 		}
 
-		return .None
+		return nil
 	}
-
-
 }
 
 is_page_crossed :: proc(address1, address2: u16) -> bool {
@@ -752,7 +757,7 @@ get_operand_address :: proc(
 ) -> (
 	return_addr: u16,
 	page_crossed: bool,
-	error: Memory_Error,
+	err: Maybe(Error),
 ) {
 	// system is little endian so low byte is stored first in memory
 
@@ -890,7 +895,7 @@ console_init :: proc(console: ^Console) {
 }
 
 @(require_results)
-console_cpu_reset :: proc(console: ^Console, reset_vector: u16) -> Memory_Error {
+console_cpu_reset :: proc(console: ^Console, reset_vector: u16) -> Maybe(Error) {
 	lo := u8(reset_vector)
 	hi := u8(reset_vector >> 8)
 	console_write_to_address(console, 0xfffc, lo) or_return
@@ -918,7 +923,13 @@ CPU_INTERNAL_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1FFF, .Closed} // 2KB
 
 
 @(require_results)
-console_write_to_address :: proc(console: ^Console, address: u16, data: u8) -> Memory_Error {
+console_write_to_address :: proc(
+	console: ^Console,
+	address: u16,
+	data: u8,
+) -> (
+	err: Maybe(Error),
+) {
 	switch address {
 	case 0x0000 ..< 0x2000:
 		// cpu internal RAM, 2 KB
@@ -934,15 +945,18 @@ console_write_to_address :: proc(console: ^Console, address: u16, data: u8) -> M
 	// APU and I/O registers
 	case 0x4020 ..< 0x6000:
 		// expansion ROM
-		assert(false, "expansion ROM not supported")
+		err = errorf(
+			.Invalid_Address,
+			"cannot write to $02X, expansion ROM not supported ($4020-$6000)",
+		)
 	case 0x6000 ..= 0xffff:
 		// mapper
 		console.mapper->write_to_address(address, data) or_return
 	case:
-		return .Invalid_Address
+		err = errorf(.Invalid_Address, "cannot write '%02X' to $%02X", data, address)
 	}
 
-	return .None
+	return
 }
 
 
@@ -952,7 +966,7 @@ console_read_from_address :: proc(
 	address: u16,
 ) -> (
 	data: u8,
-	error: Memory_Error,
+	err: Maybe(Error),
 ) {
 	switch address {
 	case 0x0000 ..< 0x2000:
@@ -971,12 +985,15 @@ console_read_from_address :: proc(
 	// APU and I/O registers
 	case 0x4020 ..< 0x6000:
 		// expansion ROM
-		assert(false, "expansion ROM not supported")
+		err = errorf(
+			.Invalid_Address,
+			"cannot read from $02X, expansion ROM not supported ($4020-$6000)",
+		)
 	case 0x6000 ..= 0xffff:
 		// mapper
 		data = console.mapper->read_from_address(address) or_return
 	case:
-		error = .Invalid_Address
+		err = errorf(.Invalid_Address, "cannot read from $%02X", address)
 	}
 
 	return
@@ -1073,3 +1090,4 @@ console_state_to_string :: proc(console: ^Console) -> string {
 	)
 
 }
+

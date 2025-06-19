@@ -6,8 +6,8 @@ import "core:os"
 import "core:slice"
 
 Mapper :: struct {
-	read_from_address:  proc(mapper: ^Mapper, address: u16) -> (u8, Memory_Error),
-	write_to_address:   proc(mapper: ^Mapper, address: u16, data: u8) -> Memory_Error,
+	read_from_address:  proc(mapper: ^Mapper, address: u16) -> (u8, Maybe(Error)),
+	write_to_address:   proc(mapper: ^Mapper, address: u16, data: u8) -> Maybe(Error),
 	fill_from_ines_rom: proc(mapper: ^Mapper, rom: NES20),
 }
 
@@ -53,13 +53,7 @@ mapper0_delete :: proc(
 	return .None
 }
 
-mapper0_read_from_address :: proc(
-	mapper: ^Mapper,
-	address: u16,
-) -> (
-	data: u8,
-	error: Memory_Error,
-) {
+mapper0_read_from_address :: proc(mapper: ^Mapper, address: u16) -> (data: u8, err: Maybe(Error)) {
 	mapper := cast(^Mapper0)mapper
 
 	switch address {
@@ -74,19 +68,13 @@ mapper0_read_from_address :: proc(
 			data = mapper.prg_rom_hi[address - 0xc000]
 		}
 	case:
-		error = .Invalid_Address
+		err = errorf(.Invalid_Address, "cannot read from $%02X", address)
 	}
 
 	return
 }
 
-mapper0_write_to_address :: proc(
-	mapper: ^Mapper,
-	address: u16,
-	data: u8,
-) -> (
-	error: Memory_Error,
-) {
+mapper0_write_to_address :: proc(mapper: ^Mapper, address: u16, data: u8) -> (err: Maybe(Error)) {
 	mapper := cast(^Mapper0)mapper
 
 	switch address {
@@ -98,7 +86,7 @@ mapper0_write_to_address :: proc(
 		mapper.prg_rom_lo[address - 0xc000] = data
 	// error = .Read_Only
 	case:
-		error = .Invalid_Address
+		err = errorf(.Invalid_Address, "cannot write '%02X' to $%02X", data, address)
 	}
 
 	return
