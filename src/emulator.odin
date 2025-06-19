@@ -65,7 +65,7 @@ Processor_Status_Flags :: enum {
 	ZF, // bit 1
 	IF, // bit 2
 	DF, // bit 3
-	// BF, // bit 4 
+	// BF, // bit 4
 	// _5, // bit 5
 	VF, // bit 6
 	NF, // bit 7
@@ -360,7 +360,7 @@ console_cpu_step :: proc(
 			if u16(a) + u16(val) + u16(c) > 0xff do console.cpu.status += {.CF}
 			result := a + val + u8(c)
 			// @note the signed overflow could be calculated more gracefully
-			// (a & 0x80) == (b & 0x80): are sign bits of a and b are the same 
+			// (a & 0x80) == (b & 0x80): are sign bits of a and b are the same
 			// (result & 0x80) != (a & 0x80): is sign bit of the result is
 			// different from the sign bit of the original numbers
 			signed_overflow := (a & 0x80) == (val & 0x80) && (result & 0x80) != (a & 0x80)
@@ -1073,4 +1073,3 @@ console_state_to_string :: proc(console: ^Console) -> string {
 	)
 
 }
-
