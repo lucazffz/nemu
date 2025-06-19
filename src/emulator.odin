@@ -4,8 +4,6 @@ package nemu
 
 import "base:runtime"
 import "core:fmt"
-import "core:log"
-import "core:math"
 import "core:strings"
 import "utils"
 
@@ -253,9 +251,9 @@ console_cpu_step :: proc(
 
 	opcode := console_read_from_address(console, start_pc) or_return
 	instruction = get_instruction_from_opcode(opcode)
-	// fmt.println(instruction)
+
 	// @todo handle interrupt hijacking
-	handle_interrupts: {
+	handle_interrupt: {
 		INTERRUPT_CYCLE_COUNT :: 7
 		// the pushed PC is expected to point to the next
 		// instruction to be executed
@@ -273,7 +271,7 @@ console_cpu_step :: proc(
 			pc_incremented = true
 			return
 		case .NMI:
-			if instruction.type == .BRK do break handle_interrupts
+			if instruction.type == .BRK do break handle_interrupt
 			pc_to_push := start_pc
 			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
 			cpu_stack_push(console, u8(pc_to_push)) or_return
@@ -291,8 +289,8 @@ console_cpu_step :: proc(
 			pc_incremented = true
 			return
 		case .IRQ:
-			if instruction.type == .BRK do break handle_interrupts
-			if .IF in console.cpu.status do break handle_interrupts
+			if instruction.type == .BRK do break handle_interrupt
+			if .IF in console.cpu.status do break handle_interrupt
 			// same as for NMI onli different interrupt vector
 			pc_to_push := start_pc
 			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
@@ -692,9 +690,7 @@ console_cpu_step :: proc(
 			console.cpu.pc = start_pc
 			pc_incremented = true
 		case:
-			assert(false, fmt.tprintf("unhandled instruction: %v", instruction.type))
-		// Default case for unhandled (mostly illegal) instructions
-		// They will act like NOPs and just increment the PC.
+			panic(fmt.tprintf("unhandled instruction: %v", instruction.type))
 		}
 
 
@@ -823,10 +819,7 @@ get_instruction_operand_address :: proc(
 		page_crossed = is_page_crossed(base_addr, return_addr)
 	case .Implied, .Accumulator, .Relative:
 		// Implied, Accumulator, and Relative modes don't use this function.
-		assert(
-			false,
-			fmt.tprintf("tried to fetch instruction operand using address mode %v", mode),
-		)
+		panic(fmt.tprintf("tried to fetch instruction operand using address mode %v", mode))
 	}
 
 	return
@@ -836,7 +829,6 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 	console.cpu.pc = address
 }
 
-// sets _5 and BF to 1
 status_flags_to_byte :: proc(flags: bit_set[Processor_Status_Flags], set_BF := true) -> u8 {
 	return(
 		(u8(.NF in flags) << 7) |
@@ -925,7 +917,6 @@ console_delete :: proc(
 	loc := #caller_location,
 ) -> runtime.Allocator_Error {
 	delete_slice(console.ram, allocator, loc) or_return
-	// free(console, allocator, loc) or_return
 	return .None
 }
 
@@ -965,7 +956,7 @@ console_write_to_address :: proc(
 		// mapper
 		mapper_write_to_address(console.mapper, address, data) or_return
 	case:
-		assert(false, fmt.tprintf("invalid address $%02X", address))
+		panic(fmt.tprintf("invalid address $%02X", address))
 	}
 
 	return
@@ -1005,7 +996,7 @@ console_read_from_address :: proc(
 		// mapper
 		data = mapper_read_from_address(console.mapper, address) or_return
 	case:
-		assert(false, fmt.tprintf("invalid address $%02X", address))
+		panic(fmt.tprintf("invalid address $%02X", address))
 	}
 	return
 }

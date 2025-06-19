@@ -6,7 +6,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-TEST_ROMS_DIRECTORY_PATH :: #config(TEST_ROMS_DIRECTORY_PATH, "./test_roms")
+TEST_ROMS_DIRECTORY_PATH :: #config(TEST_ROMS_DIRECTORY_PATH, #directory + "../test_roms")
 VERBOSE_LOGGING :: #config(VERBOSE_LOGGING, false)
 
 fail :: proc(t: ^testing.T, msg: string, loc := #caller_location) {

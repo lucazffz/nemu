@@ -7,12 +7,11 @@ import "core:mem"
 import "core:os"
 import "core:strings"
 
-ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, "./assets")
+ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, #directory + "../assets")
 
 default_context: runtime.Context
 
-console: ^Console
-
+console: Console
 
 main :: proc() {
 	logger := log.create_console_logger(.Info)
@@ -53,49 +52,5 @@ main :: proc() {
 	}
 
 	default_context = context
-
-	// console := console_make()
-	// console_load_from_ines(console)
-	// mapper := mapper_make()
-	// defer console_delete(console)
-	// defer mapper_delete(mapper)
-
-	// console.mapper = mapper
-
-
-	if file, err := os.read_entire_file_or_err("../test_roms/cpu_test/nestest.nes"); err != nil {
-		fmt.eprintln("could not read file: %s", err)
-	} else {
-		defer delete(file)
-		if variant, ok := ines_determine_format_variant_from_bytes(file); ok {
-			// rom := get_ines_from_bytes(file)
-			// mapper->fill_from_ines_rom(rom)
-
-		} else {
-			fmt.eprintln("file not .nes file")
-		}
-
-
-	}
-
-
-	error := console_cpu_reset(console, 0xc000)
-	fmt.println(console.cpu.status)
-	fmt.printfln("%x", status_flags_to_byte(console.cpu.status, false))
-	assert(error == nil, "shit")
-	// fmt.printfln("%x", console.cpu.pc)
-	// fmt.println(console.cpu.cycle_count)
-
-	for i := 0; i < 8900; i += 1 {
-		instr, cycles, error := console_cpu_step(console)
-		if error != nil {
-			fmt.eprintln(error)
-			return
-		}
-
-	}
-
-	fmt.println(console.cpu.cycle_count)
-	fmt.printfln("%x", status_flags_to_byte(console.cpu.status, false))
 }
 

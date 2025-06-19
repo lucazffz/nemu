@@ -2,8 +2,6 @@ package nemu
 
 import "base:runtime"
 import "core:fmt"
-import "core:log"
-import "core:os"
 import "core:slice"
 import "utils"
 
@@ -43,7 +41,7 @@ mapper_make_from_ines :: proc(
 		mapper = m
 
 	case:
-		assert(false, fmt.tprintf("mapper number %d not supported", mapper_number))
+		panic(fmt.tprintf("mapper number %d not supported", mapper_number))
 	}
 
 	return
@@ -63,7 +61,7 @@ mapper_delete :: proc(
 		// free(mapper) or_return
 		return .None
 	case:
-		assert(false, fmt.tprintf("%v not supported", mapper))
+		panic(fmt.tprintf("%v not supported", mapper))
 	}
 
 	return .None
@@ -87,7 +85,7 @@ mapper_read_from_address :: proc(mapper: Mapper, address: u16) -> (data: u8, err
 			err = errorf(.Invalid_Address, "mapper cannot read from $%02X", address)
 		}
 	case:
-		assert(false, fmt.tprintf("mapper type %v not supported", mapper))
+		panic(fmt.tprintf("mapper type %v not supported", mapper))
 	}
 
 	return
@@ -111,7 +109,7 @@ mapper_write_to_address :: proc(mapper: Mapper, address: u16, data: u8) -> (err:
 			err = errorf(.Invalid_Address, "mapper cannot write '%02X' to $%02X", data, address)
 		}
 	case:
-		assert(false, fmt.tprintf("mapper type %v not supported", mapper))
+		panic(fmt.tprintf("mapper type %v not supported", mapper))
 	}
 
 	return
