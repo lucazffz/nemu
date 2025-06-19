@@ -56,7 +56,7 @@ error_to_string :: proc(err: Error) -> string {
 
 	}
 
-	return fmt.tprint("ERROR: %s, %v", msg, err.type)
+	return fmt.tprintf("ERROR: %s, %v", msg, err.type)
 }
 
 error_log :: proc(err: Error, logger := context.logger) {

@@ -54,13 +54,13 @@ main :: proc() {
 
 	default_context = context
 
-	console := console_make()
-	console_init(console)
-	mapper := mapper_make()
-	defer console_delete(console)
-	defer mapper_delete(mapper)
+	// console := console_make()
+	// console_load_from_ines(console)
+	// mapper := mapper_make()
+	// defer console_delete(console)
+	// defer mapper_delete(mapper)
 
-	console.mapper = mapper
+	// console.mapper = mapper
 
 
 	if file, err := os.read_entire_file_or_err("../test_roms/cpu_test/nestest.nes"); err != nil {
@@ -68,8 +68,8 @@ main :: proc() {
 	} else {
 		defer delete(file)
 		if variant, ok := ines_determine_format_variant_from_bytes(file); ok {
-			rom := ines_nes20_from_bytes(file)
-			mapper->fill_from_ines_rom(rom)
+			// rom := get_ines_from_bytes(file)
+			// mapper->fill_from_ines_rom(rom)
 
 		} else {
 			fmt.eprintln("file not .nes file")

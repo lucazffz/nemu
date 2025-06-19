@@ -90,7 +90,7 @@ iNES_NES_FILE_VARIANT :: enum {
 
 // }
 
-ines_nes20_from_bytes :: proc(data: []byte) -> NES20 {
+get_ines_from_bytes :: proc(data: []byte) -> NES20 {
 	header := NES20_Header{}
 
 	// if the MSB nibble is $f, an exponent-mutiplier is used to calculate

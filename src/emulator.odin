@@ -18,7 +18,7 @@ Console :: struct {
 	ram:    []u8,
 	// cycles: int,
 	// stalls: int,
-	mapper: ^Mapper,
+	mapper: Mapper,
 }
 
 // For documentation regarding the CPU, please refer to:
@@ -253,6 +253,7 @@ console_cpu_step :: proc(
 
 	opcode := console_read_from_address(console, start_pc) or_return
 	instruction = get_instruction_from_opcode(opcode)
+	// fmt.println(instruction)
 	// @todo handle interrupt hijacking
 	handle_interrupts: {
 		INTERRUPT_CYCLE_COUNT :: 7
@@ -336,7 +337,7 @@ console_cpu_step :: proc(
 		case .Accumulator, .Implied, .Relative:
 		// no address to fetch
 		case:
-			operand_addr, page_crossed = get_operand_address(
+			operand_addr, page_crossed = get_instruction_operand_address(
 				console,
 				instruction.addressing_mode,
 			) or_return
@@ -751,7 +752,7 @@ is_page_crossed :: proc(address1, address2: u16) -> bool {
 // calculate the effective address for an instruction and checks for page crossing
 // assumes that pc is pointing to opcode
 @(require_results)
-get_operand_address :: proc(
+get_instruction_operand_address :: proc(
 	console: ^Console,
 	mode: Instruction_Addressing_Mode,
 ) -> (
@@ -760,8 +761,7 @@ get_operand_address :: proc(
 	err: Maybe(Error),
 ) {
 	// system is little endian so low byte is stored first in memory
-
-	cpu := &console.cpu
+	cpu := console.cpu
 	switch mode {
 	case .Immediate:
 		return_addr = cpu.pc + 1
@@ -822,10 +822,18 @@ get_operand_address :: proc(
 		return_addr = base_addr + u16(cpu.y)
 		page_crossed = is_page_crossed(base_addr, return_addr)
 	case .Implied, .Accumulator, .Relative:
-	// Implied, Accumulator, and Relative modes don't use this function.
+		// Implied, Accumulator, and Relative modes don't use this function.
+		assert(
+			false,
+			fmt.tprintf("tried to fetch instruction operand using address mode %v", mode),
+		)
 	}
 
 	return
+}
+
+console_set_program_counter :: proc(console: ^Console, address: u16) {
+	console.cpu.pc = address
 }
 
 // sets _5 and BF to 1
@@ -869,21 +877,19 @@ console_make :: proc(
 	allocator := context.allocator,
 	loc := #caller_location,
 ) -> (
-	console: ^Console,
+	console: Console,
 	err: runtime.Allocator_Error,
 ) #optional_allocator_error {
 	// dont check error, know that interval is closed
 	ram_size, _ := utils.interval_size(CPU_INTERNAL_RAM_INTERVAL)
 	ram := make_slice([]u8, ram_size, allocator, loc) or_return
-	console = new(Console, allocator, loc) or_return
+	// console = new(Console, allocator, loc) or_return
 	console.ram = ram
 
 	return
 }
 
-// initialize default console values on startup
-// will not allocate memory, use console_make
-console_init :: proc(console: ^Console) {
+console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
 	console.cpu = {
 		x      = 0,
 		y      = 0,
@@ -891,7 +897,13 @@ console_init :: proc(console: ^Console) {
 		sp     = 0xfd,
 		pc     = 0xc000,
 		status = {.IF},
+		interrupt = .None,
+		instruction_count = 0,
+		cycle_count = 0,
+		stall_count = 0
 	}
+
+	console.mapper = mapper
 }
 
 @(require_results)
@@ -908,12 +920,12 @@ console_cpu_reset :: proc(console: ^Console, reset_vector: u16) -> Maybe(Error) 
 
 // free memory allocated to console
 console_delete :: proc(
-	console: ^Console,
+	console: Console,
 	allocator := context.allocator,
 	loc := #caller_location,
 ) -> runtime.Allocator_Error {
 	delete_slice(console.ram, allocator, loc) or_return
-	free(console, allocator, loc) or_return
+	// free(console, allocator, loc) or_return
 	return .None
 }
 
@@ -951,9 +963,9 @@ console_write_to_address :: proc(
 		)
 	case 0x6000 ..= 0xffff:
 		// mapper
-		console.mapper->write_to_address(address, data) or_return
+		mapper_write_to_address(console.mapper, address, data) or_return
 	case:
-		err = errorf(.Invalid_Address, "cannot write '%02X' to $%02X", data, address)
+		assert(false, fmt.tprintf("invalid address $%02X", address))
 	}
 
 	return
@@ -991,11 +1003,10 @@ console_read_from_address :: proc(
 		)
 	case 0x6000 ..= 0xffff:
 		// mapper
-		data = console.mapper->read_from_address(address) or_return
+		data = mapper_read_from_address(console.mapper, address) or_return
 	case:
-		err = errorf(.Invalid_Address, "cannot read from $%02X", address)
+		assert(false, fmt.tprintf("invalid address $%02X", address))
 	}
-
 	return
 }
 

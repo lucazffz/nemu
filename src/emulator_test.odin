@@ -25,50 +25,42 @@ failf :: proc(t: ^testing.T, format: string, args: ..any, location := #caller_lo
 @(test)
 test_cpu :: proc(t: ^testing.T) {
 	// run the nestest.nes test rom
-	console := console_make()
-	console_init(console)
-	mapper := mapper_make()
-	defer console_delete(console)
-	defer mapper_delete(mapper)
-
-	console.mapper = mapper
-
-
 	rom_file_path := TEST_ROMS_DIRECTORY_PATH + "/other/nestest.nes"
-	data, err := os.read_entire_file_or_err(rom_file_path)
+	rom, err := os.read_entire_file_or_err(rom_file_path)
 	if err != nil {
 		failf(t, "FAIL: could not open file '%s', %v", rom_file_path, err)
 		return
 	}
-	defer delete(data)
+	defer delete(rom)
 
-	rom := ines_nes20_from_bytes(data)
-	mapper->fill_from_ines_rom(rom)
+	ines := get_ines_from_bytes(rom)
 
-	if err := console_cpu_reset(console, 0xc000); err != nil {
-		err := err.?
-		failf(t, "FAIL: could not reset CPU, %v", err.type, location = err.loc)
-		return
+	console := console_make()
+	defer console_delete(console)
 
-	}
+	mapper := mapper_make_from_ines(ines)
+	defer mapper_delete(mapper)
+
+	console_initialize_with_mapper(&console, mapper)
+	console_set_program_counter(&console, 0xc000)
 
 	for {
 		when VERBOSE_LOGGING {
 			log.infof(
 				"[%04d] %s",
 				console.cpu.instruction_count + 1,
-				console_state_to_string(console),
+				console_state_to_string(&console),
 			)
 		}
 
-		if _, instr, err := console_cpu_step(console); err != nil {
+		if _, instr, err := console_cpu_step(&console); err != nil {
 			err := err.?
 			failf(
 				t,
 				"FAIL: error executing instruction %d (%s) \n state: %s",
 				console.cpu.instruction_count + 1,
 				err.type,
-				console_state_to_string(console),
+				console_state_to_string(&console),
 				location = err.loc,
 			)
 
@@ -79,7 +71,7 @@ test_cpu :: proc(t: ^testing.T) {
 	}
 
 	// legal instructions
-	if status_byte, err := console_read_from_address(console, 0x0003); err != nil {
+	if status_byte, err := console_read_from_address(&console, 0x0003); err != nil {
 		err := err.?
 		failf(t, "FAIL: error reading test status byte at $0002, %v", err.type, location = err.loc)
 		return
@@ -93,7 +85,7 @@ test_cpu :: proc(t: ^testing.T) {
 	}
 
 	// illegal instructions
-	if status_byte, err := console_read_from_address(console, 0x0002); err != nil {
+	if status_byte, err := console_read_from_address(&console, 0x0002); err != nil {
 		err := err.?
 		failf(t, "FAIL: error reading test status byte at $0003, %v", err.type, location = err.loc)
 		return
