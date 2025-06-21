@@ -1,4 +1,4 @@
-package nemu
+package emulator
 
 import "base:runtime"
 import "core:fmt"

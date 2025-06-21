@@ -14,13 +14,16 @@ Interval_Exclusivity :: enum {
 	Closed,
 }
 
-interval :: proc(lower, upper: $T, exclusivity := Interval_Exclusivity.Closed) -> Interval(T) {
+interval :: proc(
+	lower, upper: $T,
+	exclusivity := Interval_Exclusivity.Closed,
+) -> Interval(T) {
 	return Interval(T){lower, upper, exclusivity}
 }
 
 interval_lower_bound :: proc(interval: Interval($T)) -> (T, bool) {
 	if interval.exclusivity == .Open do return {}, false
-	return interval.lower, true
+	return interval.lower + 1, true
 }
 
 interval_upper_bound :: proc(interval: Interval($T)) -> (T, bool) {
@@ -43,4 +46,3 @@ interval_size :: proc(interval: Interval($T)) -> (T, bool) {
 
 	return interval.upper - interval.lower, true
 }
-

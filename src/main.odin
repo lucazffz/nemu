@@ -6,12 +6,13 @@ import "core:log"
 import "core:mem"
 import "core:os"
 import "core:strings"
+import "emulator"
 
 ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, #directory + "../assets")
 
 default_context: runtime.Context
 
-console: Console
+console: emulator.Console
 
 main :: proc() {
 	logger := log.create_console_logger(.Info)

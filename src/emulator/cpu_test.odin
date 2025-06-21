@@ -1,4 +1,4 @@
-package nemu
+package emulator
 
 import "core:fmt"
 import "core:log"

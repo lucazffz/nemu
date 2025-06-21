@@ -1,23 +1,11 @@
-package nemu
+package emulator
 // @note small note, white space before package declaration make ols flip
 // the hell out, yes it took days to realize...
 
+import "../utils"
 import "base:runtime"
 import "core:fmt"
 import "core:strings"
-import "utils"
-
-
-Console :: struct {
-	cpu:    CPU,
-	ppu:    PPU,
-	apu:    APU,
-	// 2 KB of internal ram ($0000 - $07FF)
-	ram:    []u8,
-	// cycles: int,
-	// stalls: int,
-	mapper: Mapper,
-}
 
 // For documentation regarding the CPU, please refer to:
 // https://www.cpcwiki.eu/index.php/MOS_6505
@@ -36,14 +24,7 @@ CPU :: struct {
 	decmial_mode:      bool,
 }
 
-PAGE_1_ADDRESS :: 0x0100
-
-PPU :: struct {
-}
-
-APU :: struct {
-}
-
+PAGE_1_BASE_ADDRESS :: 0x0100
 
 // NF - Negative Flag         : 1 when result is negative
 // VF - Overflow Flag         : 1 on signed overflow
@@ -170,7 +151,7 @@ Instruction_Addressing_Mode :: enum {
 
 Instruction_Category :: enum {
 	Legal,
-	Illegal,
+	Iglegal,
 	// Unstable,
 }
 
@@ -189,6 +170,7 @@ Instruction :: struct {
 	page_boundary_extra_cycles: int,
 	category:                   Instruction_Category,
 }
+
 
 get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 	return {
@@ -218,13 +200,7 @@ Returns:
 - error: Memory error caused by writing/reading to/from an invalid address
 */
 @(require_results)
-console_cpu_step :: proc(
-	console: ^Console,
-) -> (
-	cycles: int,
-	instruction: Instruction,
-	err: Maybe(Error),
-) {
+cpu_step :: proc(console: ^Console) -> (cycles: int, instruction: Instruction, err: Maybe(Error)) {
 	if console.cpu.stall_count > 0 {
 		console.cpu.stall_count -= 1
 		return
@@ -273,10 +249,10 @@ console_cpu_step :: proc(
 		case .NMI:
 			if instruction.type == .BRK do break handle_interrupt
 			pc_to_push := start_pc
-			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
-			cpu_stack_push(console, u8(pc_to_push)) or_return
+			stack_push(console, u8(pc_to_push >> 8)) or_return
+			stack_push(console, u8(pc_to_push)) or_return
 			status_byte := status_flags_to_byte(console.cpu.status, false)
-			cpu_stack_push(console, status_byte) or_return
+			stack_push(console, status_byte) or_return
 
 			lo, hi: u8;e: Maybe(Error)
 			lo, e = console_read_from_address(console, 0xfffa)
@@ -293,10 +269,10 @@ console_cpu_step :: proc(
 			if .IF in console.cpu.status do break handle_interrupt
 			// same as for NMI onli different interrupt vector
 			pc_to_push := start_pc
-			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
-			cpu_stack_push(console, u8(pc_to_push)) or_return
+			stack_push(console, u8(pc_to_push >> 8)) or_return
+			stack_push(console, u8(pc_to_push)) or_return
 			status_byte := status_flags_to_byte(console.cpu.status, false)
-			cpu_stack_push(console, status_byte) or_return
+			stack_push(console, status_byte) or_return
 
 			lo, hi: u8;e: Maybe(Error)
 			lo, e = console_read_from_address(console, 0xfffe)
@@ -316,13 +292,6 @@ console_cpu_step :: proc(
 
 	defer {
 		if err == nil {
-			// log.infof(
-			// 	"[%03d] opcode %02x: %s",
-			// 	console.cpu.instruction_count,
-			// 	opcode,
-			// 	instruction_to_string(instruction),
-			// )
-
 			cycles += instruction.cycle_count
 			console.cpu.instruction_count += 1
 		}
@@ -343,11 +312,6 @@ console_cpu_step :: proc(
 				cycles += instruction.page_boundary_extra_cycles
 			}
 		}
-
-		// if instruction.addressing_mode == .Zeropage_X {
-		// 	fmt.printfln("op addr: %02x", operand_addr)
-
-		// }
 
 
 		#partial switch instruction.type {
@@ -370,38 +334,38 @@ console_cpu_step :: proc(
 			signed_overflow := (a & 0x80) == (val & 0x80) && (result & 0x80) != (a & 0x80)
 			if signed_overflow do console.cpu.status += {.VF}
 			console.cpu.acc = result
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .AND:
 			val := console_read_from_address(console, operand_addr) or_return
 			console.cpu.acc &= val
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .ORA:
 			val := console_read_from_address(console, operand_addr) or_return
 			console.cpu.acc |= val
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .EOR:
 			val := console_read_from_address(console, operand_addr) or_return
 			console.cpu.acc ~= val
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		// === Compare ===
 		case .CMP:
 			val := console_read_from_address(console, operand_addr) or_return
 			temp := console.cpu.acc - val
 			console.cpu.status -= {.CF}
 			if console.cpu.acc >= val do console.cpu.status += {.CF}
-			cpu_set_zn(console, temp)
+			set_zn(console, temp)
 		case .CPX:
 			val := console_read_from_address(console, operand_addr) or_return
 			temp := console.cpu.x - val
 			console.cpu.status -= {.CF}
 			if console.cpu.x >= val do console.cpu.status += {.CF}
-			cpu_set_zn(console, temp)
+			set_zn(console, temp)
 		case .CPY:
 			val := console_read_from_address(console, operand_addr) or_return
 			temp := console.cpu.y - val
 			console.cpu.status -= {.CF}
 			if console.cpu.y >= val do console.cpu.status += {.CF}
-			cpu_set_zn(console, temp)
+			set_zn(console, temp)
 		// === Bit Test ===
 		case .BIT:
 			val := console_read_from_address(console, operand_addr) or_return
@@ -412,13 +376,13 @@ console_cpu_step :: proc(
 		// === Load/Store ===
 		case .LDA:
 			console.cpu.acc = console_read_from_address(console, operand_addr) or_return
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .LDX:
 			console.cpu.x = console_read_from_address(console, operand_addr) or_return
-			cpu_set_zn(console, console.cpu.x)
+			set_zn(console, console.cpu.x)
 		case .LDY:
 			console.cpu.y = console_read_from_address(console, operand_addr) or_return
-			cpu_set_zn(console, console.cpu.y)
+			set_zn(console, console.cpu.y)
 		case .STA:
 			console_write_to_address(console, operand_addr, console.cpu.acc) or_return
 		case .STX:
@@ -430,36 +394,36 @@ console_cpu_step :: proc(
 			val := console_read_from_address(console, operand_addr) or_return
 			val += 1
 			console_write_to_address(console, operand_addr, val) or_return
-			cpu_set_zn(console, val)
+			set_zn(console, val)
 		case .DEC:
 			val := console_read_from_address(console, operand_addr) or_return
 			val -= 1
 			console_write_to_address(console, operand_addr, val) or_return
-			cpu_set_zn(console, val)
+			set_zn(console, val)
 		case .INX:
 			console.cpu.x += 1
-			cpu_set_zn(console, console.cpu.x)
+			set_zn(console, console.cpu.x)
 		case .INY:
 			console.cpu.y += 1
-			cpu_set_zn(console, console.cpu.y)
+			set_zn(console, console.cpu.y)
 		case .DEX:
 			console.cpu.x -= 1
-			cpu_set_zn(console, console.cpu.x)
+			set_zn(console, console.cpu.x)
 		case .DEY:
 			console.cpu.y -= 1
-			cpu_set_zn(console, console.cpu.y)
+			set_zn(console, console.cpu.y)
 		// === Shifts and Rotates ===
 		case .ASL:
 			console.cpu.status -= {.CF}
 			if instruction.addressing_mode == .Accumulator {
 				if console.cpu.acc & 0x80 != 0 do console.cpu.status += {.CF}
 				console.cpu.acc <<= 1
-				cpu_set_zn(console, console.cpu.acc)
+				set_zn(console, console.cpu.acc)
 			} else {
 				val := console_read_from_address(console, operand_addr) or_return
 				if val & 0x80 != 0 do console.cpu.status += {.CF}
 				val <<= 1
-				cpu_set_zn(console, val)
+				set_zn(console, val)
 				console_write_to_address(console, operand_addr, val) or_return
 			}
 		case .LSR:
@@ -467,13 +431,13 @@ console_cpu_step :: proc(
 			if instruction.addressing_mode == .Accumulator {
 				if console.cpu.acc & 0x01 != 0 do console.cpu.status += {.CF}
 				console.cpu.acc >>= 1
-				cpu_set_zn(console, console.cpu.acc)
+				set_zn(console, console.cpu.acc)
 			} else {
 				val := console_read_from_address(console, operand_addr) or_return
 				if val & 0x01 != 0 do console.cpu.status += {.CF}
 				val >>= 1
 				console_write_to_address(console, operand_addr, val) or_return
-				cpu_set_zn(console, val)
+				set_zn(console, val)
 			}
 		case .ROL:
 			c := u8(.CF in console.cpu.status)
@@ -481,13 +445,13 @@ console_cpu_step :: proc(
 			if instruction.addressing_mode == .Accumulator {
 				if console.cpu.acc & 0x80 != 0 do console.cpu.status += {.CF}
 				console.cpu.acc = (console.cpu.acc << 1) | c
-				cpu_set_zn(console, console.cpu.acc)
+				set_zn(console, console.cpu.acc)
 			} else {
 				val := console_read_from_address(console, operand_addr) or_return
 				if val & 0x80 != 0 do console.cpu.status += {.CF}
 				val = (val << 1) | c
 				console_write_to_address(console, operand_addr, val) or_return
-				cpu_set_zn(console, val)
+				set_zn(console, val)
 			}
 		case .ROR:
 			c := u8(.CF in console.cpu.status) << 7
@@ -495,13 +459,13 @@ console_cpu_step :: proc(
 			if instruction.addressing_mode == .Accumulator {
 				if console.cpu.acc & 0x01 != 0 do console.cpu.status += {.CF}
 				console.cpu.acc = (console.cpu.acc >> 1) | c
-				cpu_set_zn(console, console.cpu.acc)
+				set_zn(console, console.cpu.acc)
 			} else {
 				val := console_read_from_address(console, operand_addr) or_return
 				if val & 0x01 != 0 do console.cpu.status += {.CF}
 				val = (val >> 1) | c
 				console_write_to_address(console, operand_addr, val) or_return
-				cpu_set_zn(console, val)
+				set_zn(console, val)
 			}
 		// === Program Flow Control ===
 		case .JMP:
@@ -509,20 +473,20 @@ console_cpu_step :: proc(
 			pc_incremented = true
 		case .JSR:
 			pc_to_push := start_pc + 2 // address of last byte of JSR instruction
-			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
-			cpu_stack_push(console, u8(pc_to_push)) or_return
+			stack_push(console, u8(pc_to_push >> 8)) or_return
+			stack_push(console, u8(pc_to_push)) or_return
 			console.cpu.pc = operand_addr
 			pc_incremented = true
 		case .RTS:
-			lo := cpu_stack_pull(console) or_return
-			hi := cpu_stack_pull(console) or_return
+			lo := stack_pull(console) or_return
+			hi := stack_pull(console) or_return
 			// add 1 since PC points to the last byte of the JSR instruction
 			console.cpu.pc = ((u16(hi) << 8) | u16(lo)) + 1
 			pc_incremented = true
 		case .RTI:
-			status_byte := cpu_stack_pull(console) or_return
-			lo := cpu_stack_pull(console) or_return
-			hi := cpu_stack_pull(console) or_return
+			status_byte := stack_pull(console) or_return
+			lo := stack_pull(console) or_return
+			hi := stack_pull(console) or_return
 			console.cpu.status = status_flags_from_byte(status_byte)
 			// Dont add 1 since PC is expected to point to the first byte
 			// of the next instruction when interrupt is triggered.
@@ -549,30 +513,30 @@ console_cpu_step :: proc(
 			branch(console, .VF in console.cpu.status) or_return;pc_incremented = true
 		// === Register Transfers ===
 		case .TAX:
-			console.cpu.x = console.cpu.acc;cpu_set_zn(console, console.cpu.x)
+			console.cpu.x = console.cpu.acc;set_zn(console, console.cpu.x)
 		case .TAY:
-			console.cpu.y = console.cpu.acc;cpu_set_zn(console, console.cpu.y)
+			console.cpu.y = console.cpu.acc;set_zn(console, console.cpu.y)
 		case .TXA:
-			console.cpu.acc = console.cpu.x;cpu_set_zn(console, console.cpu.acc)
+			console.cpu.acc = console.cpu.x;set_zn(console, console.cpu.acc)
 		case .TYA:
-			console.cpu.acc = console.cpu.y;cpu_set_zn(console, console.cpu.acc)
+			console.cpu.acc = console.cpu.y;set_zn(console, console.cpu.acc)
 		case .TSX:
-			console.cpu.x = console.cpu.sp;cpu_set_zn(console, console.cpu.x)
+			console.cpu.x = console.cpu.sp;set_zn(console, console.cpu.x)
 		case .TXS:
 			console.cpu.sp = console.cpu.x
 		// === Stack Operations ===
 		case .PHA:
-			cpu_stack_push(console, console.cpu.acc) or_return
+			stack_push(console, console.cpu.acc) or_return
 		case .PHP:
 			// when pushed, BF and _5 are set
 			status_byte := status_flags_to_byte(console.cpu.status)
-			cpu_stack_push(console, status_byte) or_return
+			stack_push(console, status_byte) or_return
 		case .PLA:
-			console.cpu.acc = cpu_stack_pull(console) or_return
-			cpu_set_zn(console, console.cpu.acc)
+			console.cpu.acc = stack_pull(console) or_return
+			set_zn(console, console.cpu.acc)
 		case .PLP:
 			// when pulled, BF and _5 are set
-			status_byte := cpu_stack_pull(console) or_return
+			status_byte := stack_pull(console) or_return
 			console.cpu.status = status_flags_from_byte(status_byte)
 		// === Flag Set/Clear ===
 		case .CLC:
@@ -597,10 +561,10 @@ console_cpu_step :: proc(
 			// is followed by an ignored padding byte to match IRQ. This is why
 			// we add 2 to PC instead of 1.
 			pc_to_push := start_pc + 2
-			cpu_stack_push(console, u8(pc_to_push >> 8)) or_return
-			cpu_stack_push(console, u8(pc_to_push)) or_return
+			stack_push(console, u8(pc_to_push >> 8)) or_return
+			stack_push(console, u8(pc_to_push)) or_return
 			status_byte := status_flags_to_byte(console.cpu.status)
-			cpu_stack_push(console, status_byte) or_return
+			stack_push(console, status_byte) or_return
 			lo := console_read_from_address(console, 0xfffe) or_return
 			hi := console_read_from_address(console, 0xffff) or_return
 			console.cpu.status += {.IF}
@@ -616,7 +580,7 @@ console_cpu_step :: proc(
 			val := console_read_from_address(console, operand_addr) or_return
 			console.cpu.acc = val
 			console.cpu.x = val
-			cpu_set_zn(console, val)
+			set_zn(console, val)
 		case .SAX:
 			val := console.cpu.acc & console.cpu.x
 			console_write_to_address(console, operand_addr, val) or_return
@@ -627,7 +591,7 @@ console_cpu_step :: proc(
 			temp := console.cpu.acc - val
 			console.cpu.status -= {.CF}
 			if console.cpu.acc >= val do console.cpu.status += {.CF}
-			cpu_set_zn(console, temp)
+			set_zn(console, temp)
 		case .ISC:
 			val := console_read_from_address(console, operand_addr) or_return
 			val += 1
@@ -642,7 +606,7 @@ console_cpu_step :: proc(
 			signed_overflow := (a & 0x80) == (val & 0x80) && (result & 0x80) != (a & 0x80)
 			if signed_overflow do console.cpu.status += {.VF}
 			console.cpu.acc = result
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .SLO:
 			val := console_read_from_address(console, operand_addr) or_return
 			console.cpu.status -= {.CF}
@@ -650,7 +614,7 @@ console_cpu_step :: proc(
 			val <<= 1
 			console_write_to_address(console, operand_addr, val) or_return
 			console.cpu.acc |= val
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .RLA:
 			c := u8(.CF in console.cpu.status)
 			console.cpu.status -= {.CF}
@@ -659,7 +623,7 @@ console_cpu_step :: proc(
 			val = (val << 1) | c
 			console_write_to_address(console, operand_addr, val) or_return
 			console.cpu.acc &= val
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .SRE:
 			val := console_read_from_address(console, operand_addr) or_return
 			console.cpu.status -= {.CF}
@@ -667,7 +631,7 @@ console_cpu_step :: proc(
 			val >>= 1
 			console_write_to_address(console, operand_addr, val) or_return
 			console.cpu.acc ~= val
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .RRA:
 			c := u8(.CF in console.cpu.status) << 7
 			console.cpu.status -= {.CF}
@@ -684,7 +648,7 @@ console_cpu_step :: proc(
 			signed_overflow := (a & 0x80) == (val & 0x80) && (result & 0x80) != (a & 0x80)
 			if signed_overflow do console.cpu.status += {.VF}
 			console.cpu.acc = result
-			cpu_set_zn(console, console.cpu.acc)
+			set_zn(console, console.cpu.acc)
 		case .JAM:
 			// Halt execution, effectively. We can do this by setting PC to itself.
 			console.cpu.pc = start_pc
@@ -697,28 +661,28 @@ console_cpu_step :: proc(
 		return
 	}
 
-
 	@(require_results)
-	cpu_stack_push :: proc(console: ^Console, data: u8) -> Maybe(Error) {
-		err := console_write_to_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp), data)
+	stack_push :: proc(console: ^Console, data: u8) -> Maybe(Error) {
+		err := console_write_to_address(console, PAGE_1_BASE_ADDRESS + u16(console.cpu.sp), data)
 		if err != nil do return errorf(err.?.type, "cannot push '%02X' to stack at SP=$%04X", data, console.cpu.sp)
 		console.cpu.sp -= 1
 		return nil
 	}
 
 	@(require_results)
-	cpu_stack_pull :: proc(console: ^Console) -> (u8, Maybe(Error)) {
+	stack_pull :: proc(console: ^Console) -> (u8, Maybe(Error)) {
 		console.cpu.sp += 1
-		data, err := console_read_from_address(console, PAGE_1_ADDRESS + u16(console.cpu.sp))
+		data, err := console_read_from_address(console, PAGE_1_BASE_ADDRESS + u16(console.cpu.sp))
 		if err != nil do return 0, errorf(err.?.type, "cannot pull from stack at SP=$%04X", console.cpu.sp)
 		return data, nil
 	}
 
-	cpu_set_zn :: proc(console: ^Console, data: u8) {
+	set_zn :: proc(console: ^Console, data: u8) {
 		console.cpu.status -= {.ZF, .NF}
 		if data == 0 do console.cpu.status += {.ZF}
 		if (data & 0x80) != 0 do console.cpu.status += {.NF}
 	}
+
 
 	// branch handles the logic for all conditional branch instructions
 	@(require_results)
@@ -741,9 +705,6 @@ console_cpu_step :: proc(
 	}
 }
 
-is_page_crossed :: proc(address1, address2: u16) -> bool {
-	return address1 & 0xff00 != address2 & 0xff00
-}
 
 // calculate the effective address for an instruction and checks for page crossing
 // assumes that pc is pointing to opcode
@@ -825,8 +786,8 @@ get_instruction_operand_address :: proc(
 	return
 }
 
-console_set_program_counter :: proc(console: ^Console, address: u16) {
-	console.cpu.pc = address
+is_page_crossed :: proc(address1, address2: u16) -> bool {
+	return address1 & 0xff00 != address2 & 0xff00
 }
 
 status_flags_to_byte :: proc(flags: bit_set[Processor_Status_Flags], set_BF := true) -> u8 {
@@ -863,144 +824,18 @@ status_flags_from_byte :: proc(byte: u8) -> (flags: bit_set[Processor_Status_Fla
 	return
 }
 
-// allocate memory for console
-// will not initialize default values, use console_init
-console_make :: proc(
-	allocator := context.allocator,
-	loc := #caller_location,
-) -> (
-	console: Console,
-	err: runtime.Allocator_Error,
-) #optional_allocator_error {
-	// dont check error, know that interval is closed
-	ram_size, _ := utils.interval_size(CPU_INTERNAL_RAM_INTERVAL)
-	ram := make_slice([]u8, ram_size, allocator, loc) or_return
-	// console = new(Console, allocator, loc) or_return
-	console.ram = ram
-
-	return
-}
-
-console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
-	console.cpu = {
-		x                 = 0,
-		y                 = 0,
-		acc               = 0,
-		sp                = 0xfd,
-		pc                = 0xc000,
-		status            = {.IF},
-		interrupt         = .None,
-		instruction_count = 0,
-		cycle_count       = 0,
-		stall_count       = 0,
-	}
-
-	console.mapper = mapper
-}
 
 @(require_results)
-console_cpu_reset :: proc(console: ^Console, reset_vector: u16) -> Maybe(Error) {
+cpu_reset :: proc(console: ^Console, reset_vector: u16) -> Maybe(Error) {
 	lo := u8(reset_vector)
 	hi := u8(reset_vector >> 8)
 	console_write_to_address(console, 0xfffc, lo) or_return
 	console_write_to_address(console, 0xfffd, hi) or_return
 
 	console.cpu.interrupt = .Reset
-	_, _, error := console_cpu_step(console)
+	_, _, error := cpu_step(console)
 	return error
 }
-
-// free memory allocated to console
-console_delete :: proc(
-	console: Console,
-	allocator := context.allocator,
-	loc := #caller_location,
-) -> runtime.Allocator_Error {
-	delete_slice(console.ram, allocator, loc) or_return
-	return .None
-}
-
-
-@(private = "file")
-CPU_INTERNAL_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1FFF, .Closed} // 2KB ram mirrored 4 times
-
-
-@(require_results)
-console_write_to_address :: proc(
-	console: ^Console,
-	address: u16,
-	data: u8,
-) -> (
-	err: Maybe(Error),
-) {
-	switch address {
-	case 0x0000 ..< 0x2000:
-		// cpu internal RAM, 2 KB
-		// RAM is mirrored every 2 KB from $0800-$1fff
-		address := address % 0x0800
-		console.ram[address] = data
-	case 0x2000 ..< 4000:
-		// PPU I/O registers
-		// registers are mirrored every 8 bytes from $2008-$3fff
-		address := address % 8
-	case 0x4000 ..< 0x4020:
-	// assert(false, "apu not supported")
-	// APU and I/O registers
-	case 0x4020 ..< 0x6000:
-		// expansion ROM
-		err = errorf(
-			.Invalid_Address,
-			"cannot write to $02X, expansion ROM not supported ($4020-$6000)",
-		)
-	case 0x6000 ..= 0xffff:
-		// mapper
-		mapper_write_to_address(console.mapper, address, data) or_return
-	case:
-		panic(fmt.tprintf("invalid address $%02X", address))
-	}
-
-	return
-}
-
-
-@(require_results)
-console_read_from_address :: proc(
-	console: ^Console,
-	address: u16,
-) -> (
-	data: u8,
-	err: Maybe(Error),
-) {
-	switch address {
-	case 0x0000 ..< 0x2000:
-		// cpu internal RAM, 2 KB
-		// RAM is mirrored every 2 KB from $0800-$1fff
-		address := address % 0x0800
-
-		data = console.ram[address]
-	// fmt.printf("%02x ", address)
-	// fmt.print(data)
-	case 0x2000 ..< 0x4000:
-		// PPU I/O registers
-		// registers are mirrored every 8 bytes from $2008-$3fff
-		address := address % 8
-	case 0x4000 ..< 0x4020:
-	// APU and I/O registers
-	case 0x4020 ..< 0x6000:
-		// expansion ROM
-		err = errorf(
-			.Invalid_Address,
-			"cannot read from $02X, expansion ROM not supported ($4020-$6000)",
-		)
-	case 0x6000 ..= 0xffff:
-		// mapper
-		data = mapper_read_from_address(console.mapper, address) or_return
-	case:
-		panic(fmt.tprintf("invalid address $%02X", address))
-	}
-	return
-}
-
 
 instruction_to_string :: proc(instruction: Instruction) -> string {
 	i := instruction
@@ -1013,83 +848,5 @@ instruction_to_string :: proc(instruction: Instruction) -> string {
 		i.category,
 		i.addressing_mode,
 	)
-}
-
-console_state_to_string :: proc(console: ^Console) -> string {
-	opcode, _ := console_read_from_address(console, console.cpu.pc)
-	instruction := get_instruction_from_opcode(opcode)
-	cpu := console.cpu
-
-	num_of_operands := instruction.byte_size - 1
-	op_str: string = "     "
-
-	// instruction have either 0, 1 or 2 operand bytes
-	operand1, _ := console_read_from_address(console, console.cpu.pc + 1)
-	operand2, _ := console_read_from_address(console, console.cpu.pc + 2)
-	if num_of_operands == 1 {
-		op_str = fmt.tprintf("%02X   ", operand1)
-	} else if num_of_operands == 2 {
-		op_str = fmt.tprintf("%02X %02X", operand1, operand2)
-	}
-
-	builder := strings.builder_make()
-	defer strings.builder_destroy(&builder)
-	type_str, _ := fmt.enum_value_to_string(instruction.type)
-	strings.write_string(&builder, type_str)
-
-
-	switch instruction.addressing_mode {
-	case .Implied, .Accumulator:
-		break
-	case .Immediate:
-		strings.write_string(&builder, fmt.tprintf(" #$%02X", operand1))
-	case .Zeropage:
-		strings.write_string(&builder, fmt.tprintf(" $%02X", operand1))
-	case .Absolute:
-		strings.write_string(&builder, fmt.tprintf(" $%02X%02X", operand2, operand1))
-	case .Absolute_X:
-	case .Absolute_Y:
-	case .Zeropage_X:
-	case .Zeropage_Y:
-	case .Relative:
-		rel_addr, _ := console_read_from_address(console, console.cpu.pc + 1)
-		jump_addr := u16(i16(console.cpu.pc) + 2 + i16(i8(rel_addr)))
-		strings.write_string(&builder, fmt.tprintf(" $%04X", jump_addr))
-	case .Indirect:
-	case .Zeropage_Indirect_X:
-	case .Zeropage_Indirect_Y:
-
-	}
-
-	#partial switch instruction.type {
-	case .STA, .BIT:
-		strings.write_string(&builder, fmt.tprintf(" = %02X", cpu.acc))
-	case .STX:
-		strings.write_string(&builder, fmt.tprintf(" = %02X", cpu.x))
-	case .STY:
-		strings.write_string(&builder, fmt.tprintf(" = %02X", cpu.y))
-	}
-
-	trailing_whitespace := strings.repeat(" ", 30 - len(builder.buf))
-	defer delete(trailing_whitespace)
-
-	strings.write_string(&builder, trailing_whitespace)
-	instr_str := strings.to_string(builder)
-
-	return fmt.tprintf(
-		"%04X  %02X %s  %s  A:%02X X:%02X Y:%02X P:%02X SP:%02X CYC:%04d",
-		// cpu.instruction_count + 1,
-		cpu.pc,
-		opcode,
-		op_str,
-		instr_str,
-		cpu.acc,
-		cpu.x,
-		cpu.y,
-		status_flags_to_byte(cpu.status, false),
-		cpu.sp,
-		cpu.cycle_count,
-	)
-
 }
 

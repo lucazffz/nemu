@@ -1,4 +1,4 @@
-package nemu
+package emulator
 
 import "core:math"
 import "core:os"
@@ -187,7 +187,6 @@ ines_is_nes_file_format :: proc(data: []byte) -> bool {
 	// (ascii "NES" followed by MS-DOS end-of-file)
 	return data[0] == 0x4e && data[1] == 0x45 && data[2] == 0x53 && data[3] == 0x1a
 }
-
 
 ines_determine_format_variant_from_bytes :: proc(data: []byte) -> (iNES_NES_FILE_VARIANT, bool) {
 	if !ines_is_nes_file_format(data) do return {}, false

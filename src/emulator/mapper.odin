@@ -1,9 +1,9 @@
-package nemu
+package emulator
 
 import "base:runtime"
 import "core:fmt"
 import "core:slice"
-import "utils"
+import "../utils"
 
 Mapper :: union {
 	Mapper0,
@@ -90,7 +90,6 @@ mapper_read_from_address :: proc(mapper: Mapper, address: u16) -> (data: u8, err
 
 	return
 }
-
 
 mapper_write_to_address :: proc(mapper: Mapper, address: u16, data: u8) -> (err: Maybe(Error)) {
 	switch m in mapper {

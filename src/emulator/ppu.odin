@@ -1,0 +1,5 @@
+package emulator
+
+PPU :: struct {
+}
+
