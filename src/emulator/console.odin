@@ -18,6 +18,7 @@ Console :: struct {
 
 // allocate memory for console
 // will not initialize default values, use console_init
+@(require_results)
 console_make :: proc(
 	allocator := context.allocator,
 	loc := #caller_location,
@@ -81,8 +82,7 @@ console_write_to_address :: proc(
 	case 0x0000 ..< 0x2000:
 		// cpu internal RAM, 2 KB
 		// RAM is mirrored every 2 KB from $0800-$1fff
-		address := address % 0x0800
-		console.ram[address] = data
+		console.ram[address & 0x07ff] = data
 	case 0x2000 ..< 4000:
 		// PPU I/O registers
 		// registers are mirrored every 8 bytes from $2008-$3fff
@@ -118,11 +118,7 @@ console_read_from_address :: proc(
 	case 0x0000 ..< 0x2000:
 		// cpu internal RAM, 2 KB
 		// RAM is mirrored every 2 KB from $0800-$1fff
-		address := address % 0x0800
-
-		data = console.ram[address]
-	// fmt.printf("%02x ", address)
-	// fmt.print(data)
+		data = console.ram[address & 0x07ff]
 	case 0x2000 ..< 0x4000:
 		// PPU I/O registers
 		// registers are mirrored every 8 bytes from $2008-$3fff
@@ -144,6 +140,7 @@ console_read_from_address :: proc(
 	return
 }
 
+@(require_results)
 console_state_to_string :: proc(console: ^Console) -> string {
 	opcode, _ := console_read_from_address(console, console.cpu.pc)
 	instruction := get_instruction_from_opcode(opcode)

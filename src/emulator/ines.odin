@@ -4,50 +4,45 @@ import "core:math"
 import "core:os"
 import "core:slice"
 
-// iNES :: struct {
-// 	prg_rom_size:                 u8,
-// 	prg_ram_size:                 u8,
-// 	chr_rom_size:                 u8,
-// 	mapper_number:                u8,
-// 	nametable_arrangement:        Nametable_Arrangement,
-// 	battery_present:              bool,
-// 	trainer_present:              bool,
-// 	alternative_nametable_layout: bool,
-// 	tv_system:                    TV_System,
-// }
-//
-NES20 :: struct {
-	header:  NES20_Header,
+iNES20 :: struct {
+	header:  struct {
+		prg_rom_size:                 int,
+		prg_ram_size:                 int,
+		prg_nvram_size:               int,
+		chr_rom_size:                 int,
+		chr_ram_size:                 int,
+		chr_nvram_size:               int,
+		mapper_number:                int,
+		submapper_number:             int,
+		nametable_arrangement:        enum {
+			Vertical, // horizontal mirrored (CIRAM A10 = PPU A11)
+			Horizontal, // vertically mirrored (CIRAM A10 = PPU A10)
+		},
+		battery_present:              bool,
+		trainer_present:              bool,
+		alternative_nametable_layout: bool,
+		tv_system:                    enum {
+			NTSC,
+			PAL,
+		},
+		console_type:                 union #no_nil {
+			Nintendo_Entertainment_System,
+			Nintendo_Vs_System,
+			Nintendo_Playchoice_10,
+			Extended_Console_Type,
+		},
+		cpu_ppu_timing_mode:          enum {
+			RP2C02,
+			RP2C07,
+			Multiple_Region,
+			UA6538,
+		},
+		miscellaneous_roms_num:       int,
+		default_expansion_device:     int,
+	},
 	trainer: []byte,
 	prg_rom: []byte,
 	chr_rom: []byte,
-}
-
-NES20_Header :: struct {
-	prg_rom_size:                 int,
-	prg_ram_size:                 int,
-	prg_nvram_size:               int,
-	chr_rom_size:                 int,
-	chr_ram_size:                 int,
-	chr_nvram_size:               int,
-	mapper_number:                int,
-	submapper_number:             int,
-	nametable_arrangement:        iNES_Nametable_Arrangement,
-	battery_present:              bool,
-	trainer_present:              bool,
-	alternative_nametable_layout: bool,
-	tv_system:                    iNES_TV_System,
-	console_type:                 iNES_Console_Type,
-	cpu_ppu_timing_mode:          iNES_CPU_PPU_Timing_Mode,
-	miscellaneous_roms_num:       int,
-	default_expansion_device:     int,
-}
-
-iNES_CPU_PPU_Timing_Mode :: enum {
-	RP2C02,
-	RP2C07,
-	Multiple_Region,
-	UA6538,
 }
 
 Nintendo_Entertainment_System :: struct {
@@ -60,23 +55,6 @@ Nintendo_Vs_System :: struct {
 	hardware_type: int,
 }
 
-iNES_Console_Type :: union #no_nil {
-	Nintendo_Entertainment_System,
-	Nintendo_Vs_System,
-	Nintendo_Playchoice_10,
-	Extended_Console_Type,
-}
-
-iNES_Nametable_Arrangement :: enum {
-	Vertical, // horizontal mirrored (CIRAM A10 = PPU A11)
-	Horizontal, // vertically mirrored (CIRAM A10 = PPU A10)
-}
-
-iNES_TV_System :: enum {
-	NTSC,
-	PAL,
-}
-
 iNES_NES_FILE_VARIANT :: enum {
 	Arachaic_iNES,
 	iNES_07,
@@ -84,9 +62,10 @@ iNES_NES_FILE_VARIANT :: enum {
 	NES_20,
 }
 
-
-get_ines_from_bytes :: proc(data: []byte) -> NES20 {
-	header := NES20_Header{}
+@(require_results)
+get_ines_from_bytes :: proc(data: []byte) -> iNES20 {
+	ines := iNES20{}
+	header := ines.header
 
 	// if the MSB nibble is $f, an exponent-mutiplier is used to calculate
 	// the PRG-ROM size
@@ -164,31 +143,38 @@ get_ines_from_bytes :: proc(data: []byte) -> NES20 {
 	prg_rom_size_bytes := header.prg_rom_size * 16 * 1024
 
 	// body
+	ines.header = header
+
 	trainer_base := 16
 	// assuming no trainer area
 	prg_rom_base := 16
 	chr_rom_base := 16 + prg_rom_size_bytes
-	nes := NES20{}
-	nes.header = header
 	if header.trainer_present {
-		nes.trainer = data[16:16 + 512]
+		ines.trainer = data[16:16 + 512]
 		prg_rom_base += 512
 		chr_rom_base += 512
 	}
 
-	nes.prg_rom = data[prg_rom_base:prg_rom_base + prg_rom_size_bytes]
+	ines.prg_rom = data[prg_rom_base:prg_rom_base + prg_rom_size_bytes]
 	// nes.chr_rom = data[chr_rom_base:chr_rom_base + header.chr_rom_size]
 
-	return nes
+	return ines
 }
 
+@(require_results)
 ines_is_nes_file_format :: proc(data: []byte) -> bool {
 	// bytes 0-3 should contain $4e $45 $53 $1a
 	// (ascii "NES" followed by MS-DOS end-of-file)
 	return data[0] == 0x4e && data[1] == 0x45 && data[2] == 0x53 && data[3] == 0x1a
 }
 
-ines_determine_format_variant_from_bytes :: proc(data: []byte) -> (iNES_NES_FILE_VARIANT, bool) {
+@(require_results)
+ines_determine_format_variant_from_bytes :: proc(
+	data: []byte,
+) -> (
+	iNES_NES_FILE_VARIANT,
+	bool,
+) #optional_ok {
 	if !ines_is_nes_file_format(data) do return {}, false
 	// detection procedure follows the one recommended at
 	// https://www.nesdev.org/wiki/INES

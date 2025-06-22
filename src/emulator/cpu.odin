@@ -14,7 +14,12 @@ CPU :: struct {
 	y:                 u8,
 	acc:               u8,
 	status:            bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
-	interrupt:         Hardware_Interrupt,
+	interrupt:         enum {
+		None,
+		Reset,
+		NMI,
+		IRQ,
+	},
 	// stack is located in page 1 ($0100-$01FF), sp is offset to this base
 	sp:                u8,
 	pc:                u16,
@@ -151,15 +156,7 @@ Instruction_Addressing_Mode :: enum {
 
 Instruction_Category :: enum {
 	Legal,
-	Iglegal,
-	// Unstable,
-}
-
-Hardware_Interrupt :: enum {
-	None,
-	Reset,
-	NMI,
-	IRQ,
+	Ilegal,
 }
 
 Instruction :: struct {
@@ -172,6 +169,7 @@ Instruction :: struct {
 }
 
 
+@(require_results)
 get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 	return {
 		type = Instruction_Type(instruction_type[opcode]),
@@ -786,10 +784,12 @@ get_instruction_operand_address :: proc(
 	return
 }
 
+@(require_results)
 is_page_crossed :: proc(address1, address2: u16) -> bool {
 	return address1 & 0xff00 != address2 & 0xff00
 }
 
+@(require_results)
 status_flags_to_byte :: proc(flags: bit_set[Processor_Status_Flags], set_BF := true) -> u8 {
 	return(
 		(u8(.NF in flags) << 7) |
@@ -803,6 +803,7 @@ status_flags_to_byte :: proc(flags: bit_set[Processor_Status_Flags], set_BF := t
 	)
 }
 
+@(require_results)
 status_flags_from_byte :: proc(byte: u8) -> (flags: bit_set[Processor_Status_Flags]) {
 	// When pulled (PLP, RTI), bit 5 is always forced to 1, and bit 4 (BF) is forced to 0.
 	// Other flags are set directly from the byte.

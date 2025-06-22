@@ -55,11 +55,15 @@ main :: proc() {
 	default_context = context
 
 	ppu: emulator.PPU
-	ppu.ppuctrl.vblank_nmi_enable = 1
 
-	byt: u8 = u8(ppu.ppuctrl)
 
-	fmt.println(byt)
+	i : u8 = 6
+	ppu.mmio_register_bank.ppuctrl.nametable_base_address = i
+
+	byt: u8 = u8(ppu.mmio_register_bank.ppuctrl)
+
+	fmt.println(ppu.mmio_register_bank.ppuctrl.nametable_base_address)
+	// fmt.println(byt)
 
 }
 
