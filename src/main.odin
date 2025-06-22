@@ -53,5 +53,13 @@ main :: proc() {
 	}
 
 	default_context = context
+
+	ppu: emulator.PPU
+	ppu.ppuctrl.vblank_nmi_enable = 1
+
+	byt: u8 = u8(ppu.ppuctrl)
+
+	fmt.println(byt)
+
 }
 

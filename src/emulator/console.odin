@@ -1,9 +1,9 @@
 package emulator
 
+import "../utils"
 import "base:runtime"
 import "core:fmt"
 import "core:strings"
-import "../utils"
 
 Console :: struct {
 	cpu:    CPU,
@@ -26,7 +26,7 @@ console_make :: proc(
 	err: runtime.Allocator_Error,
 ) #optional_allocator_error {
 	// dont check error, know that interval is closed
-	ram_size, _ := utils.interval_size(CPU_INTERNAL_RAM_INTERVAL)
+	ram_size := utils.interval_size(CPU_INTERNAL_RAM_INTERVAL)
 	ram := make_slice([]u8, ram_size, allocator, loc) or_return
 	// console = new(Console, allocator, loc) or_return
 	console.ram = ram
