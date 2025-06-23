@@ -63,8 +63,9 @@ iNES_NES_FILE_VARIANT :: enum {
 }
 
 @(require_results)
-get_ines_from_bytes :: proc(data: []byte) -> iNES20 {
-	ines := iNES20{}
+get_ines_from_bytes :: proc(data: []byte) -> (ines: iNES20, ok: bool) #optional_ok {
+	if ok = ines_is_nes_file_format(data); !ok do return
+
 	header := ines.header
 
 	// if the MSB nibble is $f, an exponent-mutiplier is used to calculate
@@ -158,7 +159,7 @@ get_ines_from_bytes :: proc(data: []byte) -> iNES20 {
 	ines.prg_rom = data[prg_rom_base:prg_rom_base + prg_rom_size_bytes]
 	// nes.chr_rom = data[chr_rom_base:chr_rom_base + header.chr_rom_size]
 
-	return ines
+	return
 }
 
 @(require_results)

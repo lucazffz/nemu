@@ -7,7 +7,6 @@ import "core:strings"
 import "core:testing"
 
 TEST_ROMS_DIRECTORY_PATH :: #config(TEST_ROMS_DIRECTORY_PATH, #directory + "../../test_roms")
-VERBOSE_LOGGING :: #config(VERBOSE_LOGGING, false)
 
 fail :: proc(t: ^testing.T, msg: string, loc := #caller_location) {
 	if msg != "" {
@@ -45,13 +44,11 @@ test_cpu :: proc(t: ^testing.T) {
 	console_set_program_counter(&console, 0xc000)
 
 	for {
-		when VERBOSE_LOGGING {
-			log.infof(
-				"[%04d] %s",
-				console.cpu.instruction_count + 1,
-				console_state_to_string(&console),
-			)
-		}
+		log.debugf(
+			"[%04d] %s",
+			console.cpu.instruction_count + 1,
+			console_state_to_string(&console),
+		)
 
 		if _, instr, err := cpu_step(&console); err != nil {
 			err := err.?

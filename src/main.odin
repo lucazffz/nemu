@@ -57,13 +57,17 @@ main :: proc() {
 	ppu: emulator.PPU
 
 
-	i : u8 = 6
+	i: u8 = 6
 	ppu.mmio_register_bank.ppuctrl.nametable_base_address = i
 
 	byt: u8 = u8(ppu.mmio_register_bank.ppuctrl)
 
+	err := emulator.error(.Read_Only, "some error")
+	emulator.error_log(err, .Warning)
+
 	fmt.println(ppu.mmio_register_bank.ppuctrl.nametable_base_address)
 	// fmt.println(byt)
+	// log.warn("WARNING: hej")
 
 }
 

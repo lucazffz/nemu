@@ -27,10 +27,12 @@ Memory_Error :: enum {
 }
 
 
+@(require_results)
 error :: proc(type: Error_Type, msg: string = "", loc := #caller_location) -> Error {
 	return {type, msg, loc}
 }
 
+@(require_results)
 errorf :: proc(
 	type: Error_Type,
 	format: string,
@@ -42,7 +44,8 @@ errorf :: proc(
 	return {type, msg, loc}
 }
 
-error_to_string :: proc(err: Error) -> string {
+@(require_results)
+error_to_string :: proc(err: Error, prefix := "ERROR: ") -> string {
 	msg := err.msg
 	if msg == "" {
 		switch err.type {
@@ -56,11 +59,24 @@ error_to_string :: proc(err: Error) -> string {
 
 	}
 
-	return fmt.tprintf("ERROR: %s, %v", msg, err.type)
+	return fmt.tprintf("%s%s, %v", prefix, msg, err.type)
 }
 
-error_log :: proc(err: Error, logger := context.logger) {
-	msg := error_to_string(err)
-	log.error(msg, location = err.loc)
+error_log :: proc(err: Error, level := log.Level.Error, logger := context.logger) {
+	prefix: string
+	switch level {
+	case .Debug:
+		prefix = "DEBUG: "
+	case .Info:
+		prefix = "INFO: "
+	case .Warning:
+		prefix = "WARNING: "
+	case .Error:
+		prefix = "ERROR: "
+	case .Fatal:
+		prefix = "FATAL: "
+	}
+	msg := error_to_string(err, prefix)
+	log.log(level, msg, location = err.loc)
 }
 
