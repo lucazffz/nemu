@@ -6,6 +6,7 @@ import "core:log"
 
 Error_Type :: union #shared_nil {
 	Memory_Error,
+	iNES_Error,
 	Instruction_Error,
 }
 
@@ -22,8 +23,23 @@ Instruction_Error :: enum {
 
 Memory_Error :: enum {
 	Invalid_Address,
+	Write_Only,
 	Read_Only,
 	Out_Of_Memory,
+	Unused_Memory
+}
+
+iNES_Error :: enum {
+	Mapper_Number_Not_Supported,
+	CPU_PPU_Timing_Mode_Not_Supported,
+	Console_System_Not_Supported,
+	TV_System_Not_Supported,
+	Invalid_PRG_RAM_Size,
+	Invalid_PRG_ROM_Size,
+	Invalid_CHR_ROM_Size,
+	CHR_RAM_Not_Supported,
+	PRG_NVRAM_Not_Supported,
+	CHR_NVRAM_Not_Supported,
 }
 
 

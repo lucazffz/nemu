@@ -6,7 +6,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-TEST_ROMS_DIRECTORY_PATH :: #config(TEST_ROMS_DIRECTORY_PATH, #directory + "../../test_roms")
+TEST_ROMS_DIRECTORY_PATH :: #config(TEST_ROMS_DIRECTORY_PATH, #directory + "../../test/test_roms")
 
 fail :: proc(t: ^testing.T, msg: string, loc := #caller_location) {
 	if msg != "" {
@@ -16,8 +16,8 @@ fail :: proc(t: ^testing.T, msg: string, loc := #caller_location) {
 	}
 }
 
-failf :: proc(t: ^testing.T, format: string, args: ..any, location := #caller_location) {
-	log.errorf(format, ..args, location = location)
+failf :: proc(t: ^testing.T, format: string, args: ..any, loc := #caller_location) {
+	log.errorf(format, ..args, location = loc)
 }
 
 
@@ -34,6 +34,12 @@ test_cpu :: proc(t: ^testing.T) {
 
 	ines := get_ines_from_bytes(rom)
 
+	if err := console_vet_ines(ines); err != nil {
+		err := err.?
+		failf(t, "FAIL: %s", err.msg, loc = err.loc)
+		return
+	}
+
 	console := console_make()
 	defer console_delete(console)
 
@@ -41,36 +47,43 @@ test_cpu :: proc(t: ^testing.T) {
 	defer mapper_delete(mapper)
 
 	console_initialize_with_mapper(&console, mapper)
+	_ = cpu_reset(&console)
 	console_set_program_counter(&console, 0xc000)
 
-	for {
-		log.debugf(
-			"[%04d] %s",
-			console.cpu.instruction_count + 1,
-			console_state_to_string(&console),
-		)
+	execute_instruction: {
+		complete: bool = true
+		err: Maybe(Error)
+		for {
+			if complete {
+				log.debugf(
+					"[%04d] %s",
+					console.cpu.instruction_count,
+					console_state_to_string(&console),
+				)
+			}
 
-		if _, instr, err := cpu_step(&console); err != nil {
-			err := err.?
-			failf(
-				t,
-				"FAIL: error executing instruction %d (%s) \n state: %s",
-				console.cpu.instruction_count + 1,
-				err.type,
-				console_state_to_string(&console),
-				location = err.loc,
-			)
+			if complete, err = cpu_execute_clk_cycle(&console); err != nil {
+				err := err.?
+				failf(
+					t,
+					"FAIL: error executing instruction %d (%s) \n state: %s",
+					console.cpu.instruction_count,
+					err.type,
+					console_state_to_string(&console),
+					loc = err.loc,
+				)
 
-			return
-		} else {
-			if instr.type == .JAM do break
+				return
+			} else {
+				if console.cpu.current_instruction.?.type == .JAM && complete do break
+			}
 		}
 	}
 
 	// legal instructions
 	if status_byte, err := console_read_from_address(&console, 0x0003); err != nil {
 		err := err.?
-		failf(t, "FAIL: error reading test status byte at $0002, %v", err.type, location = err.loc)
+		failf(t, "FAIL: error reading test status byte at $0002, %v", err.type, loc = err.loc)
 		return
 	} else {
 		testing.expectf(
@@ -84,7 +97,7 @@ test_cpu :: proc(t: ^testing.T) {
 	// illegal instructions
 	if status_byte, err := console_read_from_address(&console, 0x0002); err != nil {
 		err := err.?
-		failf(t, "FAIL: error reading test status byte at $0003, %v", err.type, location = err.loc)
+		failf(t, "FAIL: error reading test status byte at $0003, %v", err.type, loc = err.loc)
 		return
 	} else {
 		testing.expectf(

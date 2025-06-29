@@ -10,23 +10,25 @@ import "core:strings"
 // For documentation regarding the CPU, please refer to:
 // https://www.cpcwiki.eu/index.php/MOS_6505
 CPU :: struct {
-	x:                 u8,
-	y:                 u8,
-	acc:               u8,
-	status:            bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
-	interrupt:         enum {
+	x:                   u8,
+	y:                   u8,
+	acc:                 u8,
+	status:              bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
+	interrupt:           enum {
 		None,
 		Reset,
 		NMI,
 		IRQ,
 	},
 	// stack is located in page 1 ($0100-$01FF), sp is offset to this base
-	sp:                u8,
-	pc:                u16,
-	cycle_count:       int,
-	stall_count:       int,
-	instruction_count: int,
-	decmial_mode:      bool,
+	sp:                  u8,
+	pc:                  u16,
+	cycle_count:         int,
+	stall_count:         int,
+	instruction_count:   int,
+	decmial_mode:        bool,
+	// will be nil if an interrupt is being handled
+	current_instruction: Maybe(Instruction),
 }
 
 PAGE_1_BASE_ADDRESS :: 0x0100
@@ -182,7 +184,7 @@ get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 }
 
 /*
-Execute a single CPU instruction
+Execute a single CPU cycle
 
 If an hardware-interrupt is set, the interurpt will be handled instead.
 The interrupt will be cleared (set to Hardware_Interrupt.None) automatically.
@@ -193,23 +195,27 @@ Inputs:
 - console: The console to operate on
 
 Returns:
-- cycles: The number of cycles the instruction took to execute
-- instruction: The executed instruction
+- complete: Weather or not the current instruction or interrupt is finished
 - error: Memory error caused by writing/reading to/from an invalid address
 */
 @(require_results)
-cpu_step :: proc(console: ^Console) -> (cycles: int, instruction: Instruction, err: Maybe(Error)) {
+cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(Error)) {
+	console.cpu.cycle_count += 1
 	if console.cpu.stall_count > 0 {
 		console.cpu.stall_count -= 1
+		if console.cpu.stall_count == 0 do complete = true
 		return
 	}
 
+	instruction: Instruction
 	operand_addr: u16
+	cycles: int
 	page_crossed: bool
 	pc_incremented := false
 	start_pc := console.cpu.pc
 
 	// --- Handle interrupt ---
+	console.cpu.current_instruction = nil
 
 	defer {
 		if err == nil {
@@ -218,7 +224,7 @@ cpu_step :: proc(console: ^Console) -> (cycles: int, instruction: Instruction, e
 				console.cpu.pc = start_pc + u16(instruction.byte_size)
 			}
 
-			console.cpu.cycle_count += cycles
+			console.cpu.stall_count = cycles - 1
 			console.cpu.interrupt = .None
 		}
 	}
@@ -241,7 +247,7 @@ cpu_step :: proc(console: ^Console) -> (cycles: int, instruction: Instruction, e
 			if e != nil do err = errorf(e.?.type, "cannot read reset vector at $FFFC, $FFFD")
 
 			console.cpu.pc = (u16(hi) << 8 | u16(lo))
-			cycles += INTERRUPT_CYCLE_COUNT
+			cycles  += INTERRUPT_CYCLE_COUNT
 			pc_incremented = true
 			return
 		case .NMI:
@@ -283,14 +289,16 @@ cpu_step :: proc(console: ^Console) -> (cycles: int, instruction: Instruction, e
 			pc_incremented = true
 			return
 		case .None:
+		// execute instruction
 		}
 	}
 
 	// --- Execute instruction ---
+	cycles = instruction.cycle_count
 
 	defer {
 		if err == nil {
-			cycles += instruction.cycle_count
+			console.cpu.current_instruction = instruction
 			console.cpu.instruction_count += 1
 		}
 	}
@@ -572,8 +580,6 @@ cpu_step :: proc(console: ^Console) -> (cycles: int, instruction: Instruction, e
 		// does nothing
 
 		// === Illegal Opcodes ===
-		// For now, most illegal opcodes will act as NOPs.
-		// A full implementation requires emulating their specific, often quirky, behavior.
 		case .LAX:
 			val := console_read_from_address(console, operand_addr) or_return
 			console.cpu.acc = val
@@ -648,13 +654,12 @@ cpu_step :: proc(console: ^Console) -> (cycles: int, instruction: Instruction, e
 			console.cpu.acc = result
 			set_zn(console, console.cpu.acc)
 		case .JAM:
-			// Halt execution, effectively. We can do this by setting PC to itself.
+			// Halt execution, can do this by setting PC to itself.
 			console.cpu.pc = start_pc
 			pc_incremented = true
 		case:
 			panic(fmt.tprintf("unhandled instruction: %v", instruction.type))
 		}
-
 
 		return
 	}
@@ -702,7 +707,6 @@ cpu_step :: proc(console: ^Console) -> (cycles: int, instruction: Instruction, e
 		return nil
 	}
 }
-
 
 // calculate the effective address for an instruction and checks for page crossing
 // assumes that pc is pointing to opcode
@@ -825,18 +829,6 @@ status_flags_from_byte :: proc(byte: u8) -> (flags: bit_set[Processor_Status_Fla
 	return
 }
 
-
-@(require_results)
-cpu_reset :: proc(console: ^Console, reset_vector: u16) -> Maybe(Error) {
-	lo := u8(reset_vector)
-	hi := u8(reset_vector >> 8)
-	console_write_to_address(console, 0xfffc, lo) or_return
-	console_write_to_address(console, 0xfffd, hi) or_return
-
-	console.cpu.interrupt = .Reset
-	_, _, error := cpu_step(console)
-	return error
-}
 
 instruction_to_string :: proc(instruction: Instruction) -> string {
 	i := instruction

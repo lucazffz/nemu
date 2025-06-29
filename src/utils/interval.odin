@@ -37,6 +37,6 @@ interval_contains :: proc(interval: Interval($T), value: T) -> bool {
 interval_size :: proc(interval: Interval($T)) -> (T, bool) #optional_ok {
 	if interval.exclusivity == .Open do return {}, false
 
-	return interval.upper - interval.lower, true
+	return interval.upper - interval.lower + 1, true
 }
 

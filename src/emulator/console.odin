@@ -3,18 +3,34 @@ package emulator
 import "../utils"
 import "base:runtime"
 import "core:fmt"
+import "core:log"
+import "core:slice"
 import "core:strings"
 
+SUPPORTED_MAPPERS :: []int{0}
+
 Console :: struct {
-	cpu:    CPU,
-	ppu:    PPU,
+	cpu:         CPU,
+	ppu:         PPU,
 	// apu:    APU,
 	// 2 KB of internal ram ($0000 - $07FF)
-	ram:    []u8,
+	ram:         []u8,
 	// cycles: int,
 	// stalls: int,
-	mapper: Mapper,
+	mapper:      Mapper,
+	cycle_count: int,
 }
+
+CPU_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1fff, .Closed} // 2KB ram mirrored 4 times
+
+// given in ppu address space
+PPU_PATTERN_TABLE_INTERVAL :: utils.Interval(u16){0x0000, 0x1fff, .Closed}
+PPU_VRAM_INTERVAL :: utils.Interval(u16){0x2000, 0x2fff, .Closed}
+// $3000 - $3eff is unused
+PPU_PALLETTE_RAM_INTERVAL :: utils.Interval(u16){0x3f00, 0x3f1f, .Closed}
+
+// seperate own address space
+PPU_OAM_INTERVAL :: utils.Interval(u8){0x00, 0xff, .Closed}
 
 // allocate memory for console
 // will not initialize default values, use console_init
@@ -23,25 +39,40 @@ console_make :: proc(
 	allocator := context.allocator,
 	loc := #caller_location,
 ) -> (
-	console: Console,
+	console: ^Console,
 	err: runtime.Allocator_Error,
 ) #optional_allocator_error {
-	// dont check error, know that interval is closed
-	ram_size := utils.interval_size(CPU_INTERNAL_RAM_INTERVAL)
-	ram := make_slice([]u8, ram_size, allocator, loc) or_return
-	// console = new(Console, allocator, loc) or_return
-	console.ram = ram
+	// dont check error, know that intervals are closed
+	ppu_palette_size := utils.interval_size(PPU_PALLETTE_RAM_INTERVAL)
+	ppu_oam_size := utils.interval_size(PPU_OAM_INTERVAL)
+	cpu_ram_size := utils.interval_size(CPU_RAM_INTERVAL)
+	ppu_vram_size := utils.interval_size(PPU_VRAM_INTERVAL)
+
+	console = new(Console, allocator, loc) or_return
+
+	// pattern table and nametable are stored in cartridge (mapper) so
+	// dont need to allocate them here
+	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
+	console.ppu.oam = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
+	console.ppu.vram = make_slice([]u8, ppu_vram_size, allocator, loc) or_return
+	console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
+	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
 
 	return
 }
 
 // free memory allocated to console
 console_delete :: proc(
-	console: Console,
+	console: ^Console,
 	allocator := context.allocator,
 	loc := #caller_location,
 ) -> runtime.Allocator_Error {
 	delete_slice(console.ram, allocator, loc) or_return
+	delete_slice(console.ppu.oam, allocator, loc) or_return
+	delete_slice(console.ppu.palette, allocator, loc) or_return
+	delete_slice(console.ppu.vram, allocator, loc) or_return
+	// delete_slice(console.ppu.pixel_buffer, allocator, loc) or_return
+	free(console) or_return
 	return .None
 }
 
@@ -50,25 +81,82 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 }
 
 console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
-	console.cpu = {
-		x                 = 0,
-		y                 = 0,
-		acc               = 0,
-		sp                = 0xfd,
-		pc                = 0xc000,
-		status            = {.IF},
-		interrupt         = .None,
-		instruction_count = 0,
-		cycle_count       = 0,
-		stall_count       = 0,
-	}
+	// @note must reassign memory pointers if want to intialize new cpu and ppu
+	// in console, do like this instead:
+	console.cpu.sp = 0xfd
+	console.cpu.pc = 0xc000
+	console.cpu.status = {.IF}
+	console.cpu.instruction_count = 0
+
+	// vblank and sprite overflow often set after power-up
+	// console.ppu.mmio_register_bank.ppustatus._unused = 0x10
 
 	console.mapper = mapper
 }
 
+console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
+	if !slice.contains(SUPPORTED_MAPPERS, ines.header.mapper_number) {
+		return errorf(
+			.Mapper_Number_Not_Supported,
+			"mapper %d is not supported",
+			ines.header.mapper_number,
+		)
+	}
 
-@(private = "file")
-CPU_INTERNAL_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1FFF, .Closed} // 2KB ram mirrored 4 times
+	if ines.header.tv_system != .NTSC {
+		return errorf(
+			.TV_System_Not_Supported,
+			"TV system %v is not supported, will assume NTSC",
+			ines.header.tv_system,
+		)
+	}
+
+	if _, ok := ines.header.console_type.(Nintendo_Entertainment_System); !ok {
+		return errorf(
+			.Console_System_Not_Supported,
+			"console system %v is not supported",
+			ines.header.console_type,
+		)
+	}
+
+	if ines.header.cpu_ppu_timing_mode != .RP2C02 {
+		return errorf(
+			.CPU_PPU_Timing_Mode_Not_Supported,
+			"timing mode %v is not supported, will assume RP2C02",
+			ines.header.cpu_ppu_timing_mode,
+		)
+	}
+
+	return ines_vet(ines)
+}
+
+console_execute_clk_cycle :: proc(
+	console: ^Console,
+) -> (
+	frame_complete: bool,
+	cpu_complete: bool,
+	err: Maybe(Error),
+) {
+
+	frame_complete = ppu_execute_clk_cycle(console) or_return
+	if console.cycle_count % 3 == 0 {
+		cpu_complete = cpu_execute_clk_cycle(console) or_return
+	}
+
+	console.cycle_count += 1
+	return
+}
+
+console_reset :: proc(console: ^Console) -> Maybe(Error) {
+	console.cpu.interrupt = .Reset
+	complete: bool
+	for !complete {
+		_, complete = console_execute_clk_cycle(console) or_return
+
+	}
+
+	return nil
+}
 
 @(require_results)
 console_write_to_address :: proc(
@@ -83,24 +171,28 @@ console_write_to_address :: proc(
 		// cpu internal RAM, 2 KB
 		// RAM is mirrored every 2 KB from $0800-$1fff
 		console.ram[address & 0x07ff] = data
-	case 0x2000 ..< 4000:
+	case 0x2000 ..< 0x4000:
 		// PPU I/O registers
 		// registers are mirrored every 8 bytes from $2008-$3fff
-		address := address % 8
+		address_offset := u8(address & 0x7)
+		write_to_ppu_mmio_register(console, data, address_offset) or_return
 	case 0x4000 ..< 0x4020:
-	// assert(false, "apu not supported")
-	// APU and I/O registers
+		// APU and I/O registers
+		if address == 0x4014 {
+			// write_to_oamdma(console, data)
+		}
 	case 0x4020 ..< 0x6000:
-		// expansion ROM
-		err = errorf(
-			.Invalid_Address,
-			"cannot write to $02X, expansion ROM not supported ($4020-$6000)",
-		)
+	// expansion ROM
+	// err = errorf(
+	// 	.Invalid_Address,
+	// 	"cannot write to $04X, expansion ROM not supported ($4020-$5FFF)",
+	// 	address,
+	// )
 	case 0x6000 ..= 0xffff:
 		// mapper
-		mapper_write_to_address(console.mapper, address, data) or_return
+		mapper_write_to_cpu_address_space(console.mapper, address, data) or_return
 	case:
-		panic(fmt.tprintf("invalid address $%02X", address))
+		panic(fmt.tprintf("invalid address $%04X", address))
 	}
 
 	return
@@ -122,22 +214,29 @@ console_read_from_address :: proc(
 	case 0x2000 ..< 0x4000:
 		// PPU I/O registers
 		// registers are mirrored every 8 bytes from $2008-$3fff
-		address := address % 8
+		address_offset := u8(address & 0x7)
+		data = read_from_ppu_mmio_register(console, address_offset) or_return
 	case 0x4000 ..< 0x4020:
-	// APU and I/O registers
+		// APU and I/O registers
+		if address == 0x4014 {
+			err = error(.Write_Only, "OAMDMA register at address $4014 is write-only")
+		}
 	case 0x4020 ..< 0x6000:
 		// expansion ROM
-		err = errorf(
-			.Invalid_Address,
-			"cannot read from $02X, expansion ROM not supported ($4020-$6000)",
-		)
+		// err = errorf(
+		// 	.Invalid_Address,
+		// 	"cannot read from $%04X, expansion ROM not supported ($4020-$5FFF)",
+		// 	address,
+		// )
 	case 0x6000 ..= 0xffff:
 		// mapper
-		data = mapper_read_from_address(console.mapper, address) or_return
+		data = mapper_read_from_cpu_address_space(console.mapper, address) or_return
 	case:
-		panic(fmt.tprintf("invalid address $%02X", address))
+		panic(fmt.tprintf("invalid address $%04X", address))
 	}
+
 	return
+
 }
 
 @(require_results)

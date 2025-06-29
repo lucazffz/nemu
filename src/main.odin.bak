@@ -1,0 +1,343 @@
+package nemu
+
+import "base:runtime"
+import "core:fmt"
+import "core:log"
+import "core:mem"
+import "core:os"
+import "core:slice"
+import "core:strings"
+import "emulator"
+import shader "shaders"
+import clay "vendor/clay/bindings/odin/clay-odin"
+import sclay "vendor/sokol-clay"
+import sapp "vendor/sokol-odin/sokol/app"
+import sg "vendor/sokol-odin/sokol/gfx"
+import sgl "vendor/sokol-odin/sokol/gl"
+import sglue "vendor/sokol-odin/sokol/glue"
+import shelpers "vendor/sokol-odin/sokol/helpers"
+
+GAME_WIDTH :: 128
+GAME_HEIGHT :: 128
+
+ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, #directory + "./assets")
+
+default_context: runtime.Context
+
+Vec2 :: [2]f32
+Vec3 :: [2]f32
+
+@(private = "file")
+console: emulator.Console
+
+@(private = "file")
+mapper: emulator.Mapper
+
+@(private = "file")
+clay_mem: [^]byte
+
+@(private = "file")
+fonts: [8]sclay.Font
+
+main :: proc() {
+	logger := log.create_console_logger(.Info)
+	defer log.destroy_console_logger(logger)
+	context.logger = logger
+
+	// setup tracking allocator in debug mode and print unfreed allocations
+	// on termination
+	when ODIN_DEBUG {
+		context.logger.lowest_level = .Debug
+
+		track: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&track, context.allocator)
+		context.allocator = mem.tracking_allocator(&track)
+
+		defer {
+			if len(track.allocation_map) > 0 {
+				// use temp allocator as to not interfere with the tracking allocator
+				if builder, err := strings.builder_make_none(context.temp_allocator); err == nil {
+					fmt.sbprintfln(
+						&builder,
+						"%v allocations not freed during termination:",
+						len(track.allocation_map),
+					)
+
+					for _, entry in track.allocation_map {
+						fmt.sbprintfln(&builder, " - %v bytes @ %v", entry.size, entry.location)
+					}
+
+					log.warn(strings.to_string(builder))
+				} else {
+					log.error("could not print unfreed allocations", err)
+				}
+
+				mem.tracking_allocator_destroy(&track)
+			}
+		}
+	}
+
+	default_context = context
+
+	sapp.run(
+		{
+			width = 800,
+			height = 600,
+			window_title = "Nemu",
+			allocator = sapp.Allocator(shelpers.allocator(&default_context)),
+			logger = sapp.Logger(shelpers.logger(&default_context)),
+			init_cb = init_cb,
+			frame_cb = frame_cb,
+			cleanup_cb = cleanup_cb,
+			event_cb = event_cb,
+		},
+	)
+}
+
+
+init_cb :: proc "c" () {
+	context = default_context
+
+	rom_file_path := "./Donkey Kong (USA) (GameCube Edition).nes"
+	rom, err := os.read_entire_file_or_err(rom_file_path)
+	if err != nil {
+		log.errorf("ERROR: could not open file '%s', %v", rom_file_path, err)
+	}
+	defer delete(rom)
+
+
+	ines := emulator.get_ines_from_bytes(rom)
+
+	if err := emulator.console_vet_ines(ines); err != nil {
+		err := err.?
+		log.errorf("ERROR: %s", err.msg, location = err.loc)
+	}
+
+	console = emulator.console_make()
+
+	mapper = emulator.mapper_make_from_ines(ines)
+
+	emulator.console_initialize_with_mapper(&console, mapper)
+	emulator.console_set_program_counter(&console, 0xc000)
+
+	sg.setup(
+		{
+			environment = sglue.environment(),
+			allocator = sg.Allocator(shelpers.allocator(&default_context)),
+			logger = sg.Logger(shelpers.logger(&default_context)),
+		},
+	)
+
+	sgl.setup(
+		{
+			allocator = sgl.Allocator(shelpers.allocator(&default_context)),
+			logger = sgl.Logger(shelpers.logger(&default_context)),
+		},
+	)
+
+
+	sclay.setup()
+	fonts[0] = sclay.add_font(ASSETS_DIRECTORY_PATH + "/fonts/Roboto-Medium.ttf")
+
+	min_memory_size := clay.MinMemorySize()
+	clay_mem = make_multi_pointer([^]byte, min_memory_size)
+	arena := clay.CreateArenaWithCapacityAndMemory(uint(min_memory_size), clay_mem)
+
+	clay.Initialize(arena, {sapp.widthf(), sapp.heightf()}, {handler = clay_error_handler})
+	clay.SetMeasureTextFunction(sclay.measure_text, &fonts)
+
+
+	clay_error_handler :: proc "c" (e: clay.ErrorData) {
+		context = default_context
+		log.errorf("ERROR: %s, %s", e.errorText, e.errorType)
+
+	}
+
+
+}
+
+frame_cb :: proc "c" () {
+	context = default_context
+	sclay.new_frame()
+
+
+	// buf: [128 * 128]int
+	// _ = emulator.ppu_pattern_table_palette_offset_to_buffer(&console, buf[:], 0)
+
+	// col: [128 * 128]u32
+	// for v, i in buf {
+	// 	if v == 0 do continue
+	// 	col[i] = 0xffffffff
+	// }
+
+
+	render_commands := create_layout()
+
+	sg.begin_pass({swapchain = sglue.swapchain()})
+
+
+	sgl.matrix_mode_modelview()
+	sgl.load_identity()
+
+	sclay.render(render_commands, &fonts)
+	sgl.draw()
+	sg.end_pass()
+	sg.commit()
+
+	free_all(context.temp_allocator)
+}
+
+cleanup_cb :: proc "c" () {
+	context = default_context
+
+	emulator.console_delete(console)
+	emulator.mapper_delete(mapper)
+
+	free(clay_mem)
+
+	sclay.shutdown()
+	sgl.shutdown()
+	sg.shutdown()
+}
+
+event_cb :: proc "c" (e: ^sapp.Event) {
+	context = default_context
+
+}
+
+// Define some colors.
+COLOR_LIGHT :: clay.Color{224, 215, 210, 255}
+COLOR_RED :: clay.Color{168, 66, 28, 255}
+COLOR_ORANGE :: clay.Color{225, 138, 50, 255}
+COLOR_BLACK :: clay.Color{0, 0, 0, 255}
+
+// Layout config is just a struct that can be declared statically, or inline
+sidebar_item_layout := clay.LayoutConfig {
+	sizing = {width = clay.SizingGrow({}), height = clay.SizingFixed(50)},
+}
+
+// Re-useable components are just normal procs.
+sidebar_item_component :: proc(index: u32) {
+	if clay.UI()(
+	{
+		id = clay.ID("SidebarBlob", index),
+		layout = sidebar_item_layout,
+		backgroundColor = COLOR_ORANGE,
+	},
+	) {}
+}
+
+game_view_component :: proc(index: u32) {
+
+}
+
+pattern_table_component :: proc(pattern_table_index: int) {
+	if clay.UI()(
+	{
+		id = clay.ID("PatternTableOuter"),
+		layout = {sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})}},
+	},
+	) {
+		if clay.UI()(
+		{
+			id = clay.ID("PatternTable"),
+			layout = {sizing = {width = clay.SizingFixed(60), height = clay.SizingFixed(60)}},
+			image = {
+				// imageData = 
+				
+			}
+			// image = {
+
+			// }
+			// image = {
+			//     // How you define `profile_picture` depends on your renderer.
+			//     imageData = &profile_picture,
+			//     sourceDimensions = {
+			//         width = 60,
+			//         height = 60,
+			//     },
+			// },
+		},
+		) {}
+	}
+
+}
+
+create_layout :: proc() -> clay.ClayArray(clay.RenderCommand) {
+	// Begin constructing the layout.
+	clay.BeginLayout()
+
+	// An example of laying out a UI with a fixed-width sidebar and flexible-width main content
+	// NOTE: To create a scope for child components, the Odin API uses `if` with components that have children
+	if clay.UI()(
+	{
+		id = clay.ID("SideBar"),
+		layout = {
+			layoutDirection = .TopToBottom,
+			sizing = {width = clay.SizingFixed(300), height = clay.SizingGrow({})},
+			padding = {16, 16, 16, 16},
+			childGap = 16,
+		},
+		backgroundColor = COLOR_LIGHT,
+	},
+	) {
+		if clay.UI()(
+		{
+			id = clay.ID("ProfilePictureOuter"),
+			layout = {
+				sizing = {width = clay.SizingGrow({})},
+				padding = {16, 16, 16, 16},
+				childGap = 16,
+				childAlignment = {y = .Center},
+			},
+			backgroundColor = COLOR_RED,
+			cornerRadius = {6, 6, 6, 6},
+		},
+		) {
+			if clay.UI()(
+			{
+				id = clay.ID("ProfilePicture"),
+				layout = {sizing = {width = clay.SizingFixed(60), height = clay.SizingFixed(60)}},
+				// image = {
+
+				// }
+				// image = {
+				//     // How you define `profile_picture` depends on your renderer.
+				//     imageData = &profile_picture,
+				//     sourceDimensions = {
+				//         width = 60,
+				//         height = 60,
+				//     },
+				// },
+			},
+			) {}
+
+			clay.Text(
+				"Clay - UI Library",
+				clay.TextConfig({fontId = 0, textColor = COLOR_BLACK, fontSize = 16}),
+			)
+		}
+
+		pattern_table_component(0)
+		
+
+
+		// Standard Odin code like loops, etc. work inside components.
+		// Here we render 5 sidebar items.
+		for i in u32(0) ..< 5 {
+			sidebar_item_component(i)
+		}
+	}
+
+	// if clay.UI()(
+	// {
+	// 	id = clay.ID("MainContent"),
+	// 	layout = {sizing = {width = clay.SizingGrow({}), height = clay.SizingGrow({})}},
+	// 	backgroundColor = COLOR_LIGHT,
+	// },
+	// ) {}
+
+	// Returns a list of render commands
+	return clay.EndLayout()
+}
+

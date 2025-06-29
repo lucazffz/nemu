@@ -6,18 +6,15 @@ import "core:slice"
 
 iNES20 :: struct {
 	header:  struct {
-		prg_rom_size:                 int,
+		prg_rom_size:                 int, // 16 KB units
 		prg_ram_size:                 int,
 		prg_nvram_size:               int,
-		chr_rom_size:                 int,
+		chr_rom_size:                 int, // 8 KB units
 		chr_ram_size:                 int,
 		chr_nvram_size:               int,
 		mapper_number:                int,
 		submapper_number:             int,
-		nametable_arrangement:        enum {
-			Vertical, // horizontal mirrored (CIRAM A10 = PPU A11)
-			Horizontal, // vertically mirrored (CIRAM A10 = PPU A10)
-		},
+		nametable_arrangement:        Nametable_Arrangement,
 		battery_present:              bool,
 		trainer_present:              bool,
 		alternative_nametable_layout: bool,
@@ -45,6 +42,11 @@ iNES20 :: struct {
 	chr_rom: []byte,
 }
 
+Nametable_Arrangement :: enum {
+	Vertical,
+	Horizontal,
+}
+
 Nintendo_Entertainment_System :: struct {
 }
 Extended_Console_Type :: distinct int
@@ -60,6 +62,50 @@ iNES_NES_FILE_VARIANT :: enum {
 	iNES_07,
 	iNES,
 	NES_20,
+}
+
+ines_vet :: proc(ines: iNES20) -> Maybe(Error) {
+	switch ines.header.mapper_number {
+	case 0:
+		if ines.header.prg_ram_size != 2 * 1024 &&
+		   ines.header.prg_ram_size != 4 * 1024 &&
+		   ines.header.prg_ram_size != 0 {
+			return errorf(
+				.Invalid_PRG_RAM_Size,
+				"invalid PRG-RAM size of %d bytes, must be either 0KB, 2KB or 4KB for mapper 0",
+				ines.header.prg_ram_size,
+			)
+		}
+
+		if ines.header.prg_rom_size != 1 && ines.header.prg_rom_size != 2 {
+			return errorf(
+				.Invalid_PRG_ROM_Size,
+				"invalid PRG-ROM size of %dKB, must be either 16KB or 32KB for mapper 0",
+				ines.header.prg_rom_size,
+			)
+		}
+
+		if ines.header.prg_nvram_size > 0 {
+			return error(.PRG_NVRAM_Not_Supported, "PRG-NVRAM not supported for mapper 0")
+		}
+
+		if ines.header.chr_rom_size != 1 {
+			return errorf(
+				.Invalid_CHR_ROM_Size,
+				"invalid CHR-ROM size of %dKB, must be 8KB for mapper 0",
+				ines.header.chr_rom_size,
+			)
+		}
+
+		if ines.header.chr_ram_size > 0 {
+			return error(.CHR_RAM_Not_Supported, "CHAR-RAM not supported for mapper 0")
+		}
+
+		if ines.header.chr_nvram_size > 0 {
+			return error(.CHR_NVRAM_Not_Supported, "CHR-NVRAM not supported for mapper 0")
+		}
+	}
+	return nil
 }
 
 @(require_results)
@@ -142,6 +188,7 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: iNES20, ok: bool) #optional_
 	header.default_expansion_device = int(data[15] & 0x3f)
 
 	prg_rom_size_bytes := header.prg_rom_size * 16 * 1024
+	chr_rom_size_bytes := header.chr_rom_size * 8 * 1024
 
 	// body
 	ines.header = header
@@ -157,7 +204,7 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: iNES20, ok: bool) #optional_
 	}
 
 	ines.prg_rom = data[prg_rom_base:prg_rom_base + prg_rom_size_bytes]
-	// nes.chr_rom = data[chr_rom_base:chr_rom_base + header.chr_rom_size]
+	ines.chr_rom = data[chr_rom_base:chr_rom_base + chr_rom_size_bytes]
 
 	return
 }
