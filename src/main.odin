@@ -12,17 +12,9 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "emulator"
-import shader "shaders"
 import rlimgui "vendor/imgui_impl_raylib"
 import imgui "vendor/odin-imgui"
 import rl "vendor:raylib"
-// import clay "vendor/clay/bindings/odin/clay-odin"
-// import sclay "vendor/sokol-clay"
-// import sapp "vendor/sokol-odin/sokol/app"
-// import sg "vendor/sokol-odin/sokol/gfx"
-// import sgl "vendor/sokol-odin/sokol/gl"
-// import sglue "vendor/sokol-odin/sokol/glue"
-// import shelpers "vendor/sokol-odin/sokol/helpers"
 
 GAME_WIDTH :: 256
 GAME_HEIGHT :: 240
