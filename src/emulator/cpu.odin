@@ -230,14 +230,14 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 		case .Reset:
 			handle_interrupt(console)
 		case .NMI:
-			// BRK instruction has precedence
+			// BRK instruction has precedence over NMI
 			if instr.type == .BRK {
 				err = execute_instruction(console, instr)
 			} else {
 				handle_interrupt(console)
 			}
 		case .IRQ:
-			// BRK instruction has precedence
+			// BRK instruction has precedence over IRQ
 			// dont execute IRQ if IF (interrupt disable) flag is set
 			if instr.type == .BRK || .IF in console.cpu.status {
 				err = execute_instruction(console, instr)
@@ -252,6 +252,9 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 	return
 
 	handle_interrupt :: proc(console: ^Console) {
+		// the pushed PC is expected to point to the next
+		// instruction to be executed
+		// interrupt priority from higest to lowest: reset, BRK, NMI, IRQ
 		// @todo handle interrupt hijacking
 		INTERRUPT_CYCLE_COUNT :: 7
 
@@ -260,10 +263,6 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			console.cpu.interrupt = .None
 		}
 
-		// the pushed PC is expected to point to the next
-		// instruction to be executed
-		//
-		// interrupt priority from higest to lowest: resest, brk, nmi, irq
 		switch console.cpu.interrupt {
 		case .Reset:
 			lo, hi: u8;e: Maybe(Error)
@@ -289,7 +288,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 		case .IRQ:
 			// if instr.type == .BRK do return true
 			// if .IF in console.cpu.status do return true
-			// same as for NMI onli different interrupt vector
+			// same as for NMI only different interrupt vector
 			pc_to_push := console.cpu.pc
 			stack_push(console, u8(pc_to_push >> 8))
 			stack_push(console, u8(pc_to_push))

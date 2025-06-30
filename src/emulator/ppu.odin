@@ -29,8 +29,8 @@ PPU :: struct {
 	// Rendering settings ($2001 write-only)
 	mask:                    bit_field u8 {
 		greyscale:                   bool | 1, // 0: normal color, 1: greyscale
-		show_background:             bool | 1, // 0: hide, 1: show background in leftmost 8 pixels of screen
-		show_sprites:                bool | 1, // 0: hide, 1: show sprites in leftmost 8 pixels of screen
+		show_background_in_margin:   bool | 1, // 0: hide, 1: show background in leftmost 8 pixels of screen
+		show_sprites_in_margin:      bool | 1, // 0: hide, 1: show sprites in leftmost 8 pixels of screen
 		enable_background_rendering: bool | 1,
 		enable_sprite_rendering:     bool | 1,
 		emphasize_red:               bool | 1, // green on PAL/Dendy
@@ -69,8 +69,9 @@ PPU :: struct {
 	vram:                    []u8,
 	oam:                     []u8,
 	palette:                 []u8,
-	is_rendering:            bool,
+	// is_rendering:            bool,
 	// frame_complete:         bool,
+	frame_count:             u64,
 	cycle:                   int,
 	scanline:                int,
 	pixel_buffer:            []Color,
@@ -161,7 +162,7 @@ write_to_oamdma :: proc(console: ^Console, data: u8) {
 	// Writing to OAMDMA will cause an entire RAM page to be copied into OAM.
 	// This is implemented as 256 pairs of RAM reads and OAMDATA writes in the
 	// original hardware.
-	if console.ppu.is_rendering do return
+	// if console.ppu.is_rendering do return
 
 	// console.ppu.mmio_register_bank.oamdma = data
 	num_of_copies := copy(console.ppu.oam, console.ram[data:data + 255])
@@ -393,35 +394,58 @@ ppu_get_color_from_palette :: proc(console: ^Console, palette_index, offset: uin
 
 @(require_results)
 ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
-	// the ppu will continue execution even when encountering read errors and simply cascade them
-	// to the caller as warnings
+	// the ppu will continue execution even when encountering read errors and
+	// simply cascade them to the caller as warnings
 
 	ppu := &console.ppu
 
+	// reset PPU status during pre-render scanline
+	if ppu.scanline == -1 && ppu.cycle == 1 {
+		ppu.status.vblank = false
+		ppu.status.sprite_0_hit = false
+		ppu.status.sprite_overflow = false
+	}
+
+	if ppu.scanline == -1 && ppu.cycle >= 280 && ppu.cycle < 305 {
+		transfer_vertical(ppu)
+	}
+
+	// skip the first idle tick on the first visible scanline (0,0) on odd frames
+	if ppu.scanline == 0 && ppu.cycle == 0 {
+		ppu.cycle = 1
+	}
+
+
+	// visible scanlines(0-239) + pre-render scanline (-1)
+	// The pre-render scanline (-1) is a dummy scanline whose purpose is
+	// to fill the shift registers for the first visible scanline (0).
+	// It will do the same operations as a normal visible scanline.
 	if ppu.scanline >= -1 && ppu.scanline < 240 {
-		// ood frame, cycle skip
-		if ppu.scanline == 0 && ppu.cycle == 0 do ppu.cycle = 1
+		/*
+		Fetch the data for tile. It require 4 memory accesses: 
 
-		if ppu.scanline == -1 && ppu.cycle == 1 {
-			ppu.status.vblank = false
-		}
+		- Nametable byte (bg_next_tile_id)
+		- Attribute table byte (bg_next_tile_attribute)
+		- Pattern table tile low (bg_next_tile_lsb)
+		- Pattern table tile high (bg_next_tile_msb)
 
-		if (ppu.cycle >= 2 && ppu.cycle < 258) || (ppu.cycle >= 321 && ppu.cycle < 338) {
+		Each access takes 2 cycles.
+				
+		The fetched data is placed into latches and fed to the appropriate
+		shift registers every 8 cycles.
+		*/
+
+		// cycle 0 is idle
+
+		if (ppu.cycle > 1 && ppu.cycle < 258) || (ppu.cycle >= 321 && ppu.cycle < 338) {
+			// shifters shift the first time during cycle 2
 			shifters_left_shift(ppu)
 
 			switch (ppu.cycle - 1) % 8 {
 			case 0:
-				shifters_init(ppu)
+				shifters_load_latched_data(ppu)
 				address := 0x2000 | (u16(ppu.v) & 0x0fff)
 				ppu.bg_next_tile_id = ppu_read_from_address(console, address)
-			// ; err != nil {
-			// 	err = errorf(
-			// 		.Nametable_Read_Error,
-			// 		"could not read background tile id from nametable ($%04X)",
-			// 		address,
-			// 		severity = .Warning,
-			// 	)
-			// }
 			case 2:
 				address :=
 					0x23c0 |
@@ -431,15 +455,6 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 					(ppu.v.coarse_x >> 2)
 
 				ppu.bg_next_tile_attribute = ppu_read_from_address(console, address)
-				// ;
-				//    err != nil {
-				// 	err = errorf(
-				// 		.Nametable_Read_Error,
-				// 		"could not read background tile attribute from nametable ($%04X)",
-				// 		address,
-				// 		severity = .Warning,
-				// 	)
-				// }
 
 				if ppu.v.coarse_y & 0x02 == 1 do ppu.bg_next_tile_attribute >>= 4
 				if ppu.v.coarse_x & 0x02 == 1 do ppu.bg_next_tile_attribute >>= 2
@@ -452,15 +467,6 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 					0
 
 				ppu.bg_next_tile_lsb = ppu_read_from_address(console, address)
-			// ;
-			//    err != nil {
-			// 	err = errorf(
-			// 		.Nametable_Read_Error,
-			// 		"could not read background tile LSB from nametable ($%04X)",
-			// 		address,
-			// 		severity = .Warning,
-			// 	)
-			// }
 			case 6:
 				address :=
 					(u16(ppu.ctrl.background_pattern_table_address) << 12) +
@@ -469,15 +475,6 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 					8
 
 				ppu.bg_next_tile_msb = ppu_read_from_address(console, address)
-			// ;
-			//    err != nil {
-			// 	err = errorf(
-			// 		.Nametable_Read_Error,
-			// 		"could not read background tile MSB from nametable ($%04X)",
-			// 		address,
-			// 		severity = .Warning,
-			// 	)
-			// }
 			case 7:
 				coarse_x_increment_with_overflow(ppu)
 			}
@@ -487,7 +484,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		if ppu.cycle == 256 do fine_y_increment_with_overflow(ppu)
 
 		if ppu.cycle == 257 {
-			shifters_init(ppu)
+			// shifters_load_latched_data(ppu) // @todo should include???
 			transfer_horizontal(ppu)
 		}
 
@@ -499,43 +496,38 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		// 	) or_return
 		// }
 
-		if ppu.scanline == -1 && ppu.cycle >= 280 && ppu.cycle < 305 {
-			transfer_vertical(ppu)
-		}
-	}
 
-	if ppu.scanline == 240 {
-		// do nothing
-	}
+		if ppu.cycle < 256 && ppu.scanline != -1 {
+			bg_palette, bg_pixel: uint
+			if ppu.mask.enable_background_rendering {
+				bit_mux: u16 = 0x8000 >> ppu.x
 
-	if ppu.scanline >= 241 && ppu.scanline < 261 {
-		if ppu.scanline == 241 && ppu.cycle == 1 {
-			ppu.status.vblank = true
-			if ppu.ctrl.vblank_nmi_enable {
-				console.cpu.interrupt = .NMI
+				p0_pixel := uint((ppu.bg_shifter_pattern_lo & bit_mux) > 0)
+				p1_pixel := uint((ppu.bg_shifter_pattern_hi & bit_mux) > 0)
+				bg_pixel = (p1_pixel << 1) | p0_pixel
+
+				bg_pal0 := uint((ppu.bg_shifter_attribute_lo & bit_mux) > 0)
+				bg_pal1 := uint((ppu.bg_shifter_attribute_hi & bit_mux) > 0)
+				bg_palette = (bg_pal1 << 1) | bg_pal0
 			}
+
+			c := ppu_get_color_from_palette(console, bg_palette, bg_pixel)
+			c.a = 0xff
+			ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
 		}
 	}
 
+	// do nothing during scanline 240
 
-	bg_palette, bg_pixel: uint
-	if ppu.mask.enable_background_rendering {
-		bit_mux: u16 = 0x8000 >> ppu.x
-
-		p0_pixel := uint((ppu.bg_shifter_pattern_lo & bit_mux) > 0)
-		p1_pixel := uint((ppu.bg_shifter_pattern_hi & bit_mux) > 0)
-		bg_pixel = (p1_pixel << 1) | p0_pixel
-
-		bg_pal0 := uint((ppu.bg_shifter_attribute_lo & bit_mux) > 0)
-		bg_pal1 := uint((ppu.bg_shifter_attribute_hi & bit_mux) > 0)
-		bg_palette = (bg_pal1 << 1) | bg_pal0
+	if ppu.scanline == 241 && ppu.cycle == 1 {
+		ppu.status.vblank = true
+		if ppu.ctrl.vblank_nmi_enable {
+			console.cpu.interrupt = .NMI
+		}
 	}
 
-	if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
-		c := ppu_get_color_from_palette(console, bg_palette, bg_pixel)
-		c.a = 0xff
-		ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
-	}
+	// Do nothing during 242-260, this is the vertical blank period
+	// Well 241 is also included in vblank but yeah
 
 	ppu.cycle += 1
 	if ppu.cycle >= 341 {
@@ -543,6 +535,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		ppu.scanline += 1
 		if ppu.scanline >= 261 {
 			ppu.scanline = -1
+			ppu.frame_count += 1
 			frame_complete = true
 		}
 	}
@@ -598,7 +591,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		}
 	}
 
-	shifters_init :: proc(ppu: ^PPU) {
+	shifters_load_latched_data :: proc(ppu: ^PPU) {
 		ppu.bg_shifter_pattern_lo =
 			(ppu.bg_shifter_pattern_lo & 0xff00) | u16(ppu.bg_next_tile_lsb)
 		ppu.bg_shifter_pattern_hi =

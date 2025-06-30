@@ -75,7 +75,7 @@ main :: proc() {
 	}
 
 	// === INIT CONSOLE ===
-	rom_file_path := #directory + "../../roms/Ice Climber (USA, Europe).nes"
+	rom_file_path := #directory + "../../roms/Donkey Kong (USA) (GameCube Edition).nes"
 	rom, err := os.read_entire_file_or_err(rom_file_path)
 	if err != nil {
 		log.errorf("ERROR: could not open file '%s', %v", rom_file_path, err)
@@ -386,8 +386,8 @@ render_debug_ui :: proc() {
 		imgui.SeparatorText("PPUMASK")
 		imgui.BeginGroup()
 		flag_text("greyscale", console.ppu.mask.greyscale)
-		flag_text("show background", console.ppu.mask.show_background)
-		flag_text("show sprites", console.ppu.mask.show_sprites)
+		flag_text("show background", console.ppu.mask.show_background_in_margin)
+		flag_text("show sprites", console.ppu.mask.show_sprites_in_margin)
 		flag_text("enable background rendering", console.ppu.mask.enable_background_rendering)
 		imgui.EndGroup()
 		imgui.SameLine()
