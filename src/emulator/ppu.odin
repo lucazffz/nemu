@@ -85,7 +85,8 @@ PPU :: struct {
 	bg_shifter_attribute_hi: u16,
 }
 
-read_from_ppu_mmio_register :: proc(
+@(require_results)
+ppu_read_from_mmio_register :: proc(
 	console: ^Console,
 	address_offset: u8,
 ) -> (
@@ -96,10 +97,10 @@ read_from_ppu_mmio_register :: proc(
 	switch address_offset {
 	case 0:
 		// PPUSTATUS - Miscellaneous settings ($2000 write-only)
-		err = error(.Write_Only, "PPUCTRL register at address $2000 is write-only")
+		err = error(.Write_Only, "cannot read from $2000, PPUCTRL is write-only", .Warning)
 	case 1:
 		// PPUMASK - Rendering settings ($2001 write-only)
-		// err = error(.Write_Only, "PPUMASK register at address $2001 is write-only")
+		err = error(.Write_Only, "cannot read from $2001, PPUMASK is write-only", .Warning)
 	case 2:
 		// PPUSTATUS - Rendering events ($2002 read-only)
 		data = (u8(console.ppu.status) & 0xe0) | (console.ppu.read_buffer & 0x1f)
@@ -108,7 +109,7 @@ read_from_ppu_mmio_register :: proc(
 		console.ppu.status.vblank = false
 	case 3:
 		// OAMADDR - Sprite RAM address ($2003 write-only)
-		err = error(.Write_Only, "OAMADDR register at address $2003 is write-only")
+		err = error(.Write_Only, "cannot read from $2003, OAMADDR is write-only", .Warning)
 	case 4:
 	// OAMDATA - Sprite RAM data ($2004 read-write)
 	// @todo implement
@@ -118,17 +119,17 @@ read_from_ppu_mmio_register :: proc(
 	// ) or_return
 	case 5:
 		// PPUSCROLL - X and Y scroll ($2005 write-only)
-		err = error(.Write_Only, "PPUSCROLL register at address $2005 is write-only")
+		err = error(.Write_Only, "cannot read from $2005, PPUSCROLL is write-only", .Warning)
 	case 6:
 		// PPUADDR - VRAM address ($2006 write-only)
-		err = error(.Write_Only, "PPUADDR register at address $2006 is write-only")
+		err = error(.Write_Only, "cannot read from $2006, PPUADDR is write-only", .Warning)
 	case 7:
 		// PPUDATA - VRAM data ($2007 read-write)
 		// When reading from PPUDATA, the data is provided by a buffer due
 		// to slow PPU bus speeds. The buffer is then updated with a new
 		// value from VRAM[PPUADDR]. The buffer is ONLY updated after a read
 		data = console.ppu.read_buffer
-		console.ppu.read_buffer = ppu_read_from_address(console, u16(console.ppu.v)) or_return
+		console.ppu.read_buffer = ppu_read_from_address(console, u16(console.ppu.v))
 
 		// the palette memory doesnt have this delay since its internal
 		// to the ppu
@@ -147,11 +148,10 @@ read_from_ppu_mmio_register :: proc(
 		panic(fmt.tprintf("unrecognized PPU register at address offset %02x", address_offset))
 	}
 
-	ppu_oam_read_from_address :: proc(ppu: ^PPU, address: u8) -> (data: u8, err: Maybe(Error)) {
-		data = ppu.oam[address]
-		return
-	}
-
+	// ppu_oam_read_from_address :: proc(ppu: ^PPU, address: u8) -> (data: u8, err: Maybe(Error)) {
+	// 	data = ppu.oam[address]
+	// 	return
+	// }
 
 	return
 }
@@ -178,7 +178,7 @@ write_to_oamdma :: proc(console: ^Console, data: u8) {
 }
 
 @(require_results)
-write_to_ppu_mmio_register :: proc(
+ppu_write_to_mmio_register :: proc(
 	console: ^Console,
 	data: u8,
 	address_offset: u8,
@@ -196,7 +196,12 @@ write_to_ppu_mmio_register :: proc(
 		console.ppu.mask = auto_cast data
 	case 2:
 		// PPUSTATUS - Rendering events ($2002 read-only)
-		err = error(.Read_Only, "PPUSTATUS register at address $2002 is read-only")
+		err = errorf(
+			.Read_Only,
+			"cannot write '%02X' to $2002, PPUSTATUS is read-only",
+			data,
+			severity = .Warning,
+		)
 	case 3:
 	// OAMADDR - Sprite RAM address ($2003 write-only)
 	// @todo implement
@@ -249,25 +254,24 @@ write_to_ppu_mmio_register :: proc(
 		// PPUDATA - VRAM data ($2007 read-write)
 		// when writing to PPUDATA, the data is immediately written to VRAM
 		// @todo implement increment behaviour during rendering
-		// log.debugf("addr: %04X, val: %d", u16(console.ppu.v), data)
-		ppu_write_to_address(console, data, u16(console.ppu.v)) or_return
+		err = ppu_write_to_address(console, data, u16(console.ppu.v))
 		ppu_increment_loopy_register(&console.ppu.v, console.ppu.ctrl.vram_address_increment == 1)
 	case:
 		panic(fmt.tprintf("unrecognized PPU register at address offset %02x", address_offset))
 	}
 
-	ppu_oam_write_to_address :: proc(ppu: ^PPU, data: u8, address: u8) -> (err: Maybe(Error)) {
-		ppu.oam[address] = data
-		return
-	}
+	// ppu_oam_write_to_address :: proc(ppu: ^PPU, data: u8, address: u8) -> (err: Maybe(Error)) {
+	// 	ppu.oam[address] = data
+	// 	return
+	// }
 	return
 }
 
-ppu_write_to_address :: proc(console: ^Console, data: u8, address: u16) -> (err: Maybe(Error)) {
+@(require_results)
+ppu_write_to_address :: proc(console: ^Console, data: u8, address: u16) -> Maybe(Error) {
 	address := address & 0x3fff
 	switch address {
-	case 0x000 ..< 0x3f00:
-		// log.debugf("addr: %04X, val: %d", address, data)
+	case 0x0000 ..< 0x3f00:
 		mapper_write_to_ppu_address_space(console, data, address) or_return
 	case 0x3f00 ..= 0x3fff:
 		// palette RAM (32 bytes)
@@ -283,14 +287,19 @@ ppu_write_to_address :: proc(console: ^Console, data: u8, address: u16) -> (err:
 		panic(fmt.tprintf("invalid address $%04X", address))
 	}
 
-	return
+	return nil
 }
 
-ppu_read_from_address :: proc(console: ^Console, address: u16) -> (data: u8, err: Maybe(Error)) {
+@(require_results)
+ppu_read_from_address :: proc(console: ^Console, address: u16) -> u8 {
 	address := address & 0x3fff
 	switch address {
-	case 0x000 ..< 0x3f00:
-		data = mapper_read_from_ppu_address_space(console, address) or_return
+	case 0x0000 ..< 0x3f00:
+		// cannot return error here since we know that the address is
+		// within $0000-$3EFF
+		data, err := mapper_read_from_ppu_address_space(console, address)
+		assert(err == nil, "should never give an error here")
+		return data
 	case 0x3f00 ..= 0x3fff:
 		// palette RAM (32 bytes)
 		address := address & 0x001f
@@ -300,12 +309,10 @@ ppu_read_from_address :: proc(console: ^Console, address: u16) -> (data: u8, err
 		if address == 0x0014 do address = 0x0004
 		if address == 0x0018 do address = 0x0008
 		if address == 0x001c do address = 0x000c
-		data = console.ppu.palette[address]
+		return console.ppu.palette[address]
 	case:
 		panic(fmt.tprintf("invalid address $%04X", address))
 	}
-
-	return
 }
 
 ppu_increment_loopy_register :: proc(reg: ^Loopy_Register, vertical_increment: bool) {
@@ -318,15 +325,13 @@ ppu_increment_loopy_register :: proc(reg: ^Loopy_Register, vertical_increment: b
 	reg^ = auto_cast (val & 0x7fff)
 }
 
-@(require_results)
 ppu_pattern_table_palette_offset_to_buffer :: proc(
 	console: ^Console,
-	buffer: []int,
-	table_index: int,
-) -> (
-	err: Maybe(Error),
+	buffer: []uint,
+	table_index: uint,
 ) {
 	ppu := console.ppu
+	table_index := int(table_index) // avoid a whole bunch of type conversions 
 
 	// each tile in a pattern table is 16 bytes (consistsof 8x8 pixels of 2 bits each)
 	// each pattern table contain 16x16 tiles so each row is 256 bytes
@@ -335,48 +340,62 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 		for ntile_x in 0 ..< 16 {
 			byte_offset := ntile_y * 256 + ntile_x * 16
 			for row in 0 ..< 8 {
+				tile_lsb, tile_msb: u8
+
 				// first plane
-				tile_lsb := ppu_read_from_address(
-					console,
-					u16(table_index * 0x1000 + byte_offset + row + 0),
-				) or_return
+				address := u16(table_index * 0x1000 + byte_offset + row + 0)
+				tile_lsb = ppu_read_from_address(console, address)
+				// ; err != nil {
+				// 	return errorf(
+				// 		.Pattern_Table_Read_Error,
+				// 		"could not read pattern table %d byte from $%04X",
+				// 		table_index,
+				// 		address,
+				// 	)
+				// }
+
 				// second plane
-				tile_msb := ppu_read_from_address(
-					console,
-					u16(table_index * 0x1000 + byte_offset + row + 8),
-				) or_return
+				address = u16(table_index * 0x1000 + byte_offset + row + 8)
+				tile_msb = ppu_read_from_address(console, address)
+				// ; err != nil {
+				// 	return errorf(
+				// 		.Pattern_Table_Read_Error,
+				// 		"could not read pattern table %d byte from $%04X",
+				// 		table_index,
+				// 		address,
+				// 	)
+				// }
 
 				for col in 0 ..< 8 {
 					pixel_palette_offset := (tile_lsb & 0x01) + (tile_msb & 0x01)
 					tile_lsb >>= 1;tile_msb >>= 1
 					x := ntile_x * 8 + (7 - col)
 					y := ntile_y * 8 + row
-					buffer[y * 128 + x] = int(pixel_palette_offset)
+					buffer[y * 128 + x] = uint(pixel_palette_offset)
 				}
 			}
 		}
 	}
 
-	return nil
-}
-
-ppu_get_color_from_palette :: proc(
-	console: ^Console,
-	palette_index: int,
-	offset: int,
-) -> (
-	color: Color,
-	err: Maybe(Error),
-) {
-	address := u16(0x3f00 + (palette_index << 2) + offset)
-	color_index := ppu_read_from_address(console, address) or_return
-	c := (ppu_palette_2C02[color_index & 0x3f])
-	color = transmute(Color)c
 	return
 }
 
 @(require_results)
-ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool, err: Maybe(Error)) {
+ppu_get_color_from_palette :: proc(console: ^Console, palette_index, offset: uint) -> Color {
+	assert(palette_index < 8, "index must be 0-7")
+	assert(offset < 4, "offset must be 0-2")
+
+	address := u16(0x3f00 + (palette_index << 2) + offset)
+	color_index := ppu_read_from_address(console, address)
+	c := (ppu_palette_2C02[color_index & 0x3f])
+	return transmute(Color)c
+}
+
+@(require_results)
+ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
+	// the ppu will continue execution even when encountering read errors and simply cascade them
+	// to the caller as warnings
+
 	ppu := &console.ppu
 
 	if ppu.scanline >= -1 && ppu.scanline < 240 {
@@ -394,7 +413,15 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool, err: 
 			case 0:
 				shifters_init(ppu)
 				address := 0x2000 | (u16(ppu.v) & 0x0fff)
-				ppu.bg_next_tile_id = ppu_read_from_address(console, address) or_return
+				ppu.bg_next_tile_id = ppu_read_from_address(console, address)
+			// ; err != nil {
+			// 	err = errorf(
+			// 		.Nametable_Read_Error,
+			// 		"could not read background tile id from nametable ($%04X)",
+			// 		address,
+			// 		severity = .Warning,
+			// 	)
+			// }
 			case 2:
 				address :=
 					0x23c0 |
@@ -402,7 +429,18 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool, err: 
 					(ppu.v.nametable_x << 10) |
 					((ppu.v.coarse_y >> 2) << 3) |
 					(ppu.v.coarse_x >> 2)
-				ppu.bg_next_tile_attribute = ppu_read_from_address(console, address) or_return
+
+				ppu.bg_next_tile_attribute = ppu_read_from_address(console, address)
+				// ;
+				//    err != nil {
+				// 	err = errorf(
+				// 		.Nametable_Read_Error,
+				// 		"could not read background tile attribute from nametable ($%04X)",
+				// 		address,
+				// 		severity = .Warning,
+				// 	)
+				// }
+
 				if ppu.v.coarse_y & 0x02 == 1 do ppu.bg_next_tile_attribute >>= 4
 				if ppu.v.coarse_x & 0x02 == 1 do ppu.bg_next_tile_attribute >>= 2
 				ppu.bg_next_tile_attribute &= 0x03
@@ -412,14 +450,34 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool, err: 
 					(u16(ppu.bg_next_tile_id) << 4) +
 					ppu.v.fine_y +
 					0
-				ppu.bg_next_tile_lsb = ppu_read_from_address(console, address) or_return
+
+				ppu.bg_next_tile_lsb = ppu_read_from_address(console, address)
+			// ;
+			//    err != nil {
+			// 	err = errorf(
+			// 		.Nametable_Read_Error,
+			// 		"could not read background tile LSB from nametable ($%04X)",
+			// 		address,
+			// 		severity = .Warning,
+			// 	)
+			// }
 			case 6:
 				address :=
 					(u16(ppu.ctrl.background_pattern_table_address) << 12) +
 					(u16(ppu.bg_next_tile_id) << 4) +
 					ppu.v.fine_y +
 					8
-				ppu.bg_next_tile_msb = ppu_read_from_address(console, address) or_return
+
+				ppu.bg_next_tile_msb = ppu_read_from_address(console, address)
+			// ;
+			//    err != nil {
+			// 	err = errorf(
+			// 		.Nametable_Read_Error,
+			// 		"could not read background tile MSB from nametable ($%04X)",
+			// 		address,
+			// 		severity = .Warning,
+			// 	)
+			// }
 			case 7:
 				coarse_x_increment_with_overflow(ppu)
 			}
@@ -433,12 +491,13 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool, err: 
 			transfer_horizontal(ppu)
 		}
 
-		if ppu.cycle == 338 || ppu.cycle == 340 {
-			ppu.bg_next_tile_id = ppu_read_from_address(
-				console,
-				0x2000 | (u16(ppu.v) & 0x0fff),
-			) or_return
-		}
+		// @todo is this needed???
+		// if ppu.cycle == 338 || ppu.cycle == 340 {
+		// 	ppu.bg_next_tile_id = ppu_read_from_address(
+		// 		console,
+		// 		0x2000 | (u16(ppu.v) & 0x0fff),
+		// 	) or_return
+		// }
 
 		if ppu.scanline == -1 && ppu.cycle >= 280 && ppu.cycle < 305 {
 			transfer_vertical(ppu)
@@ -459,24 +518,21 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool, err: 
 	}
 
 
-	bg_palette, bg_pixel: int
+	bg_palette, bg_pixel: uint
 	if ppu.mask.enable_background_rendering {
 		bit_mux: u16 = 0x8000 >> ppu.x
 
-		p0_pixel := int((ppu.bg_shifter_pattern_lo & bit_mux) > 0)
-		p1_pixel := int((ppu.bg_shifter_pattern_hi & bit_mux) > 0)
+		p0_pixel := uint((ppu.bg_shifter_pattern_lo & bit_mux) > 0)
+		p1_pixel := uint((ppu.bg_shifter_pattern_hi & bit_mux) > 0)
 		bg_pixel = (p1_pixel << 1) | p0_pixel
 
-		bg_pal0 := int((ppu.bg_shifter_attribute_lo & bit_mux) > 0)
-		bg_pal1 := int((ppu.bg_shifter_attribute_hi & bit_mux) > 0)
+		bg_pal0 := uint((ppu.bg_shifter_attribute_lo & bit_mux) > 0)
+		bg_pal1 := uint((ppu.bg_shifter_attribute_hi & bit_mux) > 0)
 		bg_palette = (bg_pal1 << 1) | bg_pal0
 	}
 
 	if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
-		c := ppu_get_color_from_palette(console, bg_palette, bg_pixel) or_return
-		// if bg_pixel != 0 {
-		// 	log.debugf("pal: %d, offset: %d", bg_palette, bg_pixel)
-		// }
+		c := ppu_get_color_from_palette(console, bg_palette, bg_pixel)
 		c.a = 0xff
 		ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
 	}

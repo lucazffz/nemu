@@ -37,8 +37,11 @@ mapper_make_from_ines :: proc(
 	case 0:
 		m := Mapper0{}
 		m.prg_ram_size_bytes = ines.header.prg_ram_size
-		// log.debug(m.prg_ram_size_bytes)
-		m.prg_ram = make_slice([]u8, m.prg_ram_size_bytes, allocator, loc) or_return
+
+		if m.prg_ram_size_bytes != 0 {
+			m.prg_ram = make_slice([]u8, m.prg_ram_size_bytes, allocator, loc) or_return
+		}
+
 		m.chr_rom = make_slice([]u8, 8 * 1024, allocator, loc) or_return
 		m.prg_rom_lo = make_slice([]u8, 16 * 1024, allocator, loc) or_return
 		m.prg_rom_hi = make_slice([]u8, 16 * 1024, allocator, loc) or_return
@@ -106,7 +109,7 @@ mapper_read_from_ppu_address_space :: proc(
 		case Mapper0:
 			data = m.chr_rom[address]
 		case:
-			panic("mapper not supported")
+			panic(fmt.tprintf("mapper type %v not supported", m))
 		}
 	case 0x2000 ..= 0x3eff:
 		// nametables 0 to 3 (including attribute tables)
@@ -124,10 +127,10 @@ mapper_read_from_ppu_address_space :: proc(
 				data = console.ppu.vram[address - 0x2000]
 			}
 		case:
-			panic("mapper not supported")
+			panic(fmt.tprintf("mapper type %v not supported", m))
 		}
 	case:
-		err = errorf(.Invalid_Address, "mapper cannot read from $%04X", address)
+		err = errorf(.Invalid_Address, "cannot read from $%04X", address)
 	}
 
 	return
@@ -149,12 +152,13 @@ mapper_write_to_ppu_address_space :: proc(
 		case Mapper0:
 			err = errorf(
 				.Read_Only,
-				"mapper cannot write '%02X' to $%04X (read-only memory region, $0000-$1FFF)",
+				"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
 				data,
 				address,
+				severity = .Warning,
 			)
 		case:
-			panic("mapper not supported")
+			panic(fmt.tprintf("mapper type %v not supported", m))
 		}
 	case 0x2000 ..= 0x3eff:
 		// nametables 0 to 3 (including attribute tables)
@@ -173,10 +177,16 @@ mapper_write_to_ppu_address_space :: proc(
 				console.ppu.vram[address - 0x2000] = data
 			}
 		case:
-			panic("mapper not supported")
+			panic(fmt.tprintf("mapper type %v not supported", m))
 		}
 	case:
-		err = errorf(.Invalid_Address, "mapper cannot write to $%04X", address)
+		err = errorf(
+			.Invalid_Address,
+			"cannot write '%02X' to $%04X",
+			data,
+			address,
+			severity = .Warning,
+		)
 	}
 
 	return
@@ -201,12 +211,11 @@ mapper_read_from_cpu_address_space :: proc(
 				address := address & 0xfff
 				data = m.prg_ram[address]
 			} else {
-				// panic(
-				// 	fmt.tprintf(
-				// 		"invalid PRG-RAM size of %d bytes (only 2KB or 4KB allowed)",
-				// 		m.prg_ram_size_bytes,
-				// 	),
-				// )
+				err = errorf(
+					.Unallocated_Memory,
+					"cannot read from $%04X, PRG-RAM memory ($6000-$8000) is unallocated",
+					address,
+				)
 			}
 		case 0x8000 ..< 0xc000:
 			data = m.prg_rom_lo[address - 0x8000]
@@ -217,10 +226,10 @@ mapper_read_from_cpu_address_space :: proc(
 				data = m.prg_rom_hi[address - 0xc000]
 			}
 		case:
-			err = errorf(.Invalid_Address, "mapper cannot read from $%04X", address)
+			err = errorf(.Invalid_Address, "cannot read from $%04X", address)
 		}
 	case:
-		panic(fmt.tprintf("mapper type %v not supported", mapper))
+		panic(fmt.tprintf("mapper type %v not supported", m))
 	}
 
 	return
@@ -245,25 +254,33 @@ mapper_write_to_cpu_address_space :: proc(
 				address := address & 0xfff
 				m.prg_ram[address] = data
 			} else {
-				panic(
-					fmt.tprintf(
-						"invalid PRG-RAM size of %d bytes (only 2KB or 4KB allowed)",
-						m.prg_ram_size_bytes,
-					),
+				err = errorf(
+					.Unallocated_Memory,
+					"cannot write '%02X' to $%04X, PRG-RAM memory ($6000-$8000) is unallocated",
+					data,
+					address,
+					severity = .Warning,
 				)
 			}
 		case 0x8000 ..= 0xffff:
 			err = errorf(
 				.Read_Only,
-				"mapper cannot write '%02X' to $%04X (read-only memory region, $2000-$9FFF)",
+				"cannot write '%02X' to $%04X (read-only, $2000-$9FFF)",
 				data,
 				address,
+				severity = .Warning,
 			)
 		case:
-			err = errorf(.Invalid_Address, "mapper cannot write '%02X' to $%04X", data, address)
+			err = errorf(
+				.Invalid_Address,
+				"cannot write '%02X' to $%04X",
+				data,
+				address,
+				severity = .Warning,
+			)
 		}
 	case:
-		panic(fmt.tprintf("mapper type %v not supported", mapper))
+		panic(fmt.tprintf("mapper type %v not supported", m))
 	}
 
 	return

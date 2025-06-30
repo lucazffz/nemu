@@ -46,9 +46,9 @@ test_cpu :: proc(t: ^testing.T) {
 	mapper := mapper_make_from_ines(ines)
 	defer mapper_delete(mapper)
 
-	console_initialize_with_mapper(&console, mapper)
-	_ = cpu_reset(&console)
-	console_set_program_counter(&console, 0xc000)
+	console_initialize_with_mapper(console, mapper)
+	_ = console_reset(console)
+	console_set_program_counter(console, 0xc000)
 
 	execute_instruction: {
 		complete: bool = true
@@ -58,18 +58,18 @@ test_cpu :: proc(t: ^testing.T) {
 				log.debugf(
 					"[%04d] %s",
 					console.cpu.instruction_count,
-					console_state_to_string(&console),
+					console_state_to_string(console),
 				)
 			}
 
-			if complete, err = cpu_execute_clk_cycle(&console); err != nil {
+			if complete, err = cpu_execute_clk_cycle(console); err != nil {
 				err := err.?
 				failf(
 					t,
 					"FAIL: error executing instruction %d (%s) \n state: %s",
 					console.cpu.instruction_count,
 					err.type,
-					console_state_to_string(&console),
+					console_state_to_string(console),
 					loc = err.loc,
 				)
 
@@ -81,7 +81,7 @@ test_cpu :: proc(t: ^testing.T) {
 	}
 
 	// legal instructions
-	if status_byte, err := console_read_from_address(&console, 0x0003); err != nil {
+	if status_byte, err := console_read_from_address(console, 0x0003); err != nil {
 		err := err.?
 		failf(t, "FAIL: error reading test status byte at $0002, %v", err.type, loc = err.loc)
 		return
@@ -95,7 +95,7 @@ test_cpu :: proc(t: ^testing.T) {
 	}
 
 	// illegal instructions
-	if status_byte, err := console_read_from_address(&console, 0x0002); err != nil {
+	if status_byte, err := console_read_from_address(console, 0x0002); err != nil {
 		err := err.?
 		failf(t, "FAIL: error reading test status byte at $0003, %v", err.type, loc = err.loc)
 		return

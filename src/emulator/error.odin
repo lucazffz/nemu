@@ -7,26 +7,45 @@ import "core:log"
 Error_Type :: union #shared_nil {
 	Memory_Error,
 	iNES_Error,
-	Instruction_Error,
+	PPU_Error,
+	CPU_Error,
+}
+
+Error_Severity :: enum {
+	Warning, // could recover, but may be an issue
+	Error, // may or may not be recoverable (context dependent), should discard return value
+	Fatal, // could not recover, should halt execution
 }
 
 
 Error :: struct {
-	type: Error_Type,
-	msg:  string,
-	loc:  runtime.Source_Code_Location,
+	type:     Error_Type,
+	severity: Error_Severity,
+	msg:      string,
+	loc:      runtime.Source_Code_Location,
 }
 
-Instruction_Error :: enum {
-	Test,
+CPU_Error :: enum {
+	Operand_Error,
+	Branch_Error,
+	Stack_Error,
+	Opcode_Error,
+	Reset_Error,
+}
+
+PPU_Error :: enum {
+	Nametable_Read_Error,
+	Pattern_Table_Read_Error,
+	Palette_Read_Error,
 }
 
 Memory_Error :: enum {
 	Invalid_Address,
 	Write_Only,
 	Read_Only,
-	Out_Of_Memory,
-	Unused_Memory
+	// Out_Of_Memory,
+	// Unused_Memory,
+	Unallocated_Memory,
 }
 
 iNES_Error :: enum {
@@ -44,8 +63,13 @@ iNES_Error :: enum {
 
 
 @(require_results)
-error :: proc(type: Error_Type, msg: string = "", loc := #caller_location) -> Error {
-	return {type, msg, loc}
+error :: proc(
+	type: Error_Type,
+	msg: string = "",
+	severity: Error_Severity = .Error,
+	loc := #caller_location,
+) -> Error {
+	return {type, severity, msg, loc}
 }
 
 @(require_results)
@@ -53,11 +77,12 @@ errorf :: proc(
 	type: Error_Type,
 	format: string,
 	args: ..any,
+	severity: Error_Severity = .Error,
 	newline := false,
 	loc := #caller_location,
 ) -> Error {
 	msg := fmt.tprintf(format, ..args, newline = newline)
-	return {type, msg, loc}
+	return {type, severity, msg, loc}
 }
 
 @(require_results)
@@ -67,15 +92,14 @@ error_to_string :: proc(err: Error, prefix := "ERROR: ") -> string {
 		switch err.type {
 		case .Invalid_Address:
 		case .Read_Only:
-		case .Out_Of_Memory:
-		case .Test:
+		// case .Out_Of_Memory:
 		case:
 			msg = "unexpected problem occurred"
 		}
 
 	}
 
-	return fmt.tprintf("%s%s, %v", prefix, msg, err.type)
+	return fmt.tprintf("%s%s [%v]", prefix, msg, err.type)
 }
 
 error_log :: proc(err: Error, level := log.Level.Error, logger := context.logger) {

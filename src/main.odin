@@ -75,7 +75,7 @@ main :: proc() {
 	}
 
 	// === INIT CONSOLE ===
-	rom_file_path := #directory + "../roms/Ice Climber (USA, Europe).nes"
+	rom_file_path := #directory + "../../roms/Ice Climber (USA, Europe).nes"
 	rom, err := os.read_entire_file_or_err(rom_file_path)
 	if err != nil {
 		log.errorf("ERROR: could not open file '%s', %v", rom_file_path, err)
@@ -109,11 +109,11 @@ main :: proc() {
 	// emulator.ppu_write_to_address(console, 0x5, 0x3f00 + 2)
 	// emulator.ppu_write_to_address(console, 0x6, 0x3f00 + 3)
 
-	palette_index_buffer_0: [128 * 128]int
-	palette_index_buffer_1: [128 * 128]int
+	palette_index_buffer_0: [128 * 128]uint
+	palette_index_buffer_1: [128 * 128]uint
 
-	_ = emulator.ppu_pattern_table_palette_offset_to_buffer(console, palette_index_buffer_0[:], 0)
-	_ = emulator.ppu_pattern_table_palette_offset_to_buffer(console, palette_index_buffer_1[:], 1)
+	emulator.ppu_pattern_table_palette_offset_to_buffer(console, palette_index_buffer_0[:], 0)
+	emulator.ppu_pattern_table_palette_offset_to_buffer(console, palette_index_buffer_1[:], 1)
 
 	pattern_table_0_buf: [128 * 128]rl.Color
 	pattern_table_1_buf: [128 * 128]rl.Color
@@ -187,8 +187,8 @@ main :: proc() {
 			for (should_run || !cpu_complete) && !frame_complete {
 				if frame_complete, cpu_complete, err = console_execute_clk_cycle(console);
 				   err != nil {
-					err := err.?
 					if err != last_err {
+						err := err.?
 						error_log(err, log.Level.Warning)
 						last_err = err
 					}
@@ -201,7 +201,7 @@ main :: proc() {
 				for v, i in palette_index_buffer_0 {
 					// if v == 0 do continue
 					// @note watch out for endianess when converting color from u32 to [4]u8
-					c, _ := emulator.ppu_get_color_from_palette(console, 0, v)
+					c := emulator.ppu_get_color_from_palette(console, 0, v)
 					col := rl.Color{c.b, c.g, c.r, 0xff}
 					pattern_table_0_buf[i] = col
 				}
@@ -233,7 +233,7 @@ main :: proc() {
 		}
 
 
-		rl.SetTargetFPS(60)
+		// rl.SetTargetFPS(60)
 
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.BLACK)
@@ -270,6 +270,8 @@ main :: proc() {
 		// Drawing on top of ImGui (call after 'rlimgui.end()' to do that, as showed here)
 		// rl.DrawText("Drawing on top of ImGui window", 170, 370, 30, rl.BLUE)
 		rl.EndDrawing()
+
+		free_all(context.temp_allocator)
 	}
 }
 
@@ -297,7 +299,7 @@ render_debug_ui :: proc() {
 
 	if show_pattern_tables {
 		imgui.Begin("Pattern Tables", nil, {.AlwaysAutoResize})
-		val, _ := emulator.ppu_read_from_address(console, 0x2000)
+		val := emulator.ppu_read_from_address(console, 0x2000)
 		rlimgui.image_size(&pattern_table_0_texture, {256, 256})
 		imgui.SameLine()
 		rlimgui.image_size(&pattern_table_1_texture, {256, 256})
@@ -428,23 +430,19 @@ render_debug_ui :: proc() {
 	}
 
 	get_palette_color :: proc(palette_index, offset: int) -> u32 {
-		if c, err := emulator.ppu_get_color_from_palette(console, palette_index, offset);
-		   err != nil {
-			return 0xffffffff
-		} else {
-			// c.a = 0xff
-			// return transmute(u32)c
-			color := transmute(u32)c
-			return reverse_bytes((color << 8) | 0xff)
+		c := emulator.ppu_get_color_from_palette(console, uint(palette_index), uint(offset))
+		// c.a = 0xff
+		// return transmute(u32)c
+		color := transmute(u32)c
+		return reverse_bytes((color << 8) | 0xff)
 
-			reverse_bytes :: proc(n: u32) -> u32 {
-				result: u32 = 0
-				result |= (n & 0x000000FF) << 24
-				result |= (n & 0x0000FF00) << 8
-				result |= (n & 0x00FF0000) >> 8
-				result |= (n & 0xFF000000) >> 24
-				return result
-			}}
-	}
+		reverse_bytes :: proc(n: u32) -> u32 {
+			result: u32 = 0
+			result |= (n & 0x000000FF) << 24
+			result |= (n & 0x0000FF00) << 8
+			result |= (n & 0x00FF0000) >> 8
+			result |= (n & 0xFF000000) >> 24
+			return result
+		}}
 }
 

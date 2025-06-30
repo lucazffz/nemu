@@ -138,9 +138,9 @@ console_execute_clk_cycle :: proc(
 	err: Maybe(Error),
 ) {
 
-	frame_complete = ppu_execute_clk_cycle(console) or_return
+	frame_complete = ppu_execute_clk_cycle(console)
 	if console.cycle_count % 3 == 0 {
-		cpu_complete = cpu_execute_clk_cycle(console) or_return
+		cpu_complete, err = cpu_execute_clk_cycle(console)
 	}
 
 	console.cycle_count += 1
@@ -175,7 +175,7 @@ console_write_to_address :: proc(
 		// PPU I/O registers
 		// registers are mirrored every 8 bytes from $2008-$3fff
 		address_offset := u8(address & 0x7)
-		write_to_ppu_mmio_register(console, data, address_offset) or_return
+		ppu_write_to_mmio_register(console, data, address_offset) or_return
 	case 0x4000 ..< 0x4020:
 		// APU and I/O registers
 		if address == 0x4014 {
@@ -215,7 +215,7 @@ console_read_from_address :: proc(
 		// PPU I/O registers
 		// registers are mirrored every 8 bytes from $2008-$3fff
 		address_offset := u8(address & 0x7)
-		data = read_from_ppu_mmio_register(console, address_offset) or_return
+		data = ppu_read_from_mmio_register(console, address_offset) or_return
 	case 0x4000 ..< 0x4020:
 		// APU and I/O registers
 		if address == 0x4014 {
@@ -223,11 +223,11 @@ console_read_from_address :: proc(
 		}
 	case 0x4020 ..< 0x6000:
 		// expansion ROM
-		// err = errorf(
-		// 	.Invalid_Address,
-		// 	"cannot read from $%04X, expansion ROM not supported ($4020-$5FFF)",
-		// 	address,
-		// )
+		err = errorf(
+			.Unallocated_Memory,
+			"cannot read from $%04X, expansion ROM not supported ($4020-$5FFF)",
+			address,
+		)
 	case 0x6000 ..= 0xffff:
 		// mapper
 		data = mapper_read_from_cpu_address_space(console.mapper, address) or_return
