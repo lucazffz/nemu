@@ -184,12 +184,15 @@ get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 }
 
 /*
-Execute a single CPU cycle
+Executes a single CPU cycle
 
 If an hardware-interrupt is set, the interurpt will be handled instead.
 The interrupt will be cleared (set to Hardware_Interrupt.None) automatically.
 
-**An error will leave the console in an invalid state**
+**Will continue execution on all non-fatal errors**
+
+A fatal error will be retunred if the CPU cannot fetch the current
+instruction and its operand's. In this case, the CPU should be reset.
 
 Inputs:
 - console: The console to operate on
@@ -203,29 +206,11 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 	console.cpu.cycle_count += 1
 	if console.cpu.stall_count > 0 {
 		console.cpu.stall_count -= 1
-		if console.cpu.stall_count == 0 do return true, nil
+		if console.cpu.stall_count == 0 do complete = true
+		return
 	}
 
-	instr: Instruction
-	op_addr: u16
-	cycles: int
-	page_crossed: bool
-	pc_incremented := false
 	start_pc := console.cpu.pc
-
-	// --- Handle interrupt ---
-	console.cpu.current_instruction = nil
-
-	defer {
-		// branch, jump and some other instructions will directly set PC
-		if !pc_incremented {
-			console.cpu.pc = start_pc + u16(instr.byte_size)
-		}
-
-		console.cpu.stall_count = cycles - 1
-		console.cpu.interrupt = .None
-	}
-
 	if opcode, e := console_read_from_address(console, start_pc); e != nil {
 		e := e.?
 		return false, errorf(
@@ -236,12 +221,45 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			severity = .Fatal,
 		)
 	} else {
-		instr = get_instruction_from_opcode(opcode)
+		instr := get_instruction_from_opcode(opcode)
+		console.cpu.current_instruction = nil
+
+		// handle_interrupt and execute_instruction are mutually exclusive
+		// meaning both will never be executed simultaneously
+		switch console.cpu.interrupt {
+		case .Reset:
+			handle_interrupt(console)
+		case .NMI:
+			// BRK instruction has precedence
+			if instr.type == .BRK {
+				err = execute_instruction(console, instr)
+			} else {
+				handle_interrupt(console)
+			}
+		case .IRQ:
+			// BRK instruction has precedence
+			// dont execute IRQ if IF (interrupt disable) flag is set
+			if instr.type == .BRK || .IF in console.cpu.status {
+				err = execute_instruction(console, instr)
+			} else {
+				handle_interrupt(console)
+			}
+		case .None:
+			err = execute_instruction(console, instr)
+		}
 	}
 
-	// @todo handle interrupt hijacking
-	handle_interrupt: {
+	return
+
+	handle_interrupt :: proc(console: ^Console) {
+		// @todo handle interrupt hijacking
 		INTERRUPT_CYCLE_COUNT :: 7
+
+		defer {
+			console.cpu.stall_count = INTERRUPT_CYCLE_COUNT - 1
+			console.cpu.interrupt = .None
+		}
+
 		// the pushed PC is expected to point to the next
 		// instruction to be executed
 		//
@@ -253,13 +271,9 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			hi, e = console_read_from_address(console, 0xfffd)
 			assert(e == nil, "should always be able to read from $FFFC, $FFFD")
 			console.cpu.pc = (u16(hi) << 8 | u16(lo))
-
-			cycles += INTERRUPT_CYCLE_COUNT
-			pc_incremented = true
-			return false, nil
 		case .NMI:
-			if instr.type == .BRK do break handle_interrupt
-			pc_to_push := start_pc
+			// if instr.type == .BRK do return true
+			pc_to_push := console.cpu.pc
 			stack_push(console, u8(pc_to_push >> 8))
 			stack_push(console, u8(pc_to_push))
 			status_byte := status_flags_to_byte(console.cpu.status, false)
@@ -272,14 +286,11 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
-			cycles += INTERRUPT_CYCLE_COUNT
-			pc_incremented = true
-			return false, nil
 		case .IRQ:
-			if instr.type == .BRK do break handle_interrupt
-			if .IF in console.cpu.status do break handle_interrupt
+			// if instr.type == .BRK do return true
+			// if .IF in console.cpu.status do return true
 			// same as for NMI onli different interrupt vector
-			pc_to_push := start_pc
+			pc_to_push := console.cpu.pc
 			stack_push(console, u8(pc_to_push >> 8))
 			stack_push(console, u8(pc_to_push))
 			status_byte := status_flags_to_byte(console.cpu.status, false)
@@ -292,33 +303,39 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
-			cycles += INTERRUPT_CYCLE_COUNT
-			pc_incremented = true
-			return false, nil
 		case .None:
 		// execute instruction
 		}
 	}
 
-	// --- Execute instruction ---
-	cycles = instr.cycle_count
+	execute_instruction :: proc(console: ^Console, instr: Instruction) -> (err: Maybe(Error)) {
+		start_pc := console.cpu.pc
+		op_addr: u16
+		pc_incremented: bool
+		cycles := instr.cycle_count
 
-	defer {
-		console.cpu.current_instruction = instr
-		console.cpu.instruction_count += 1
-	}
+		defer {
+			console.cpu.current_instruction = instr
+			console.cpu.instruction_count += 1
+			console.cpu.stall_count = cycles - 1
 
-	execute_instruction: {
+			// branch, jump and some other instructions will directly set PC
+			if !pc_incremented {
+				console.cpu.pc = start_pc + u16(instr.byte_size)
+			}
+		}
+
 		// pre-calculate address for modes that need it
 		#partial switch instr.addressing_mode {
 		case .Accumulator, .Implied, .Relative:
 		// no address to fetch
 		case:
+			page_crossed: bool
 			if op_addr, page_crossed, err = get_instruction_operand_address(
 				console,
 				instr.addressing_mode,
 			); err != nil {
-				return false, errorf(
+				return errorf(
 					.Operand_Error,
 					"could not read instruction (%v) operand using addressing mode %v: \"%s\"",
 					instr.type,
@@ -332,7 +349,6 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 				cycles += instr.page_boundary_extra_cycles
 			}
 		}
-
 
 		#partial switch instr.type {
 		// === Arithmetic and Logical ===
@@ -694,60 +710,103 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 		}
 
 		return
-	}
 
-	@(require_results)
-	read :: proc(console: ^Console, address: u16, instruction: Instruction) -> (u8, Maybe(Error)) {
-		if data, err := console_read_from_address(console, address); err != nil {
-			return 0, read_error(err, instruction)
-		} else {
-			return data, nil
+		@(require_results)
+		read :: proc(
+			console: ^Console,
+			address: u16,
+			instruction: Instruction,
+		) -> (
+			u8,
+			Maybe(Error),
+		) {
+			if data, err := console_read_from_address(console, address); err != nil {
+				return 0, read_error(err, instruction)
+			} else {
+				return data, nil
+			}
 		}
-	}
 
-	@(require_results)
-	write :: proc(
-		console: ^Console,
-		address: u16,
-		data: u8,
-		instruction: Instruction,
-	) -> Maybe(Error) {
-		if err := console_write_to_address(console, address, data); err != nil {
-			return write_error(err, instruction)
-		} else {
-			return nil
+		@(require_results)
+		write :: proc(
+			console: ^Console,
+			address: u16,
+			data: u8,
+			instruction: Instruction,
+		) -> Maybe(Error) {
+			if err := console_write_to_address(console, address, data); err != nil {
+				return write_error(err, instruction)
+			} else {
+				return nil
+			}
 		}
-	}
-	@(require_results)
-	read_error :: proc(err: Maybe(Error), instr: Instruction) -> Maybe(Error) {
-		if err == nil do return nil
 
-		err := err.?
-		msg_template := "cannot read operand for '%v' (%v addressing): \"%s\""
-		return errorf(
-			err.type,
-			msg_template,
-			instr.type,
-			instr.addressing_mode,
-			err.msg,
-			severity = .Error,
-		)
-	}
+		@(require_results)
+		read_error :: proc(err: Maybe(Error), instr: Instruction) -> Maybe(Error) {
+			if err == nil do return nil
 
-	@(require_results)
-	write_error :: proc(err: Maybe(Error), instr: Instruction) -> Maybe(Error) {
-		if err == nil do return nil
+			err := err.?
+			msg_template := "cannot read operand for '%v' (%v addressing): \"%s\""
+			return errorf(
+				err.type,
+				msg_template,
+				instr.type,
+				instr.addressing_mode,
+				err.msg,
+				severity = .Error,
+			)
+		}
 
-		err := err.?
-		msg_template := "'%v' (%v addressing) cannot write: \"%s\""
-		return errorf(
-			err.type,
-			msg_template,
-			instr.type,
-			instr.addressing_mode,
-			err.msg,
-			severity = .Warning,
-		)
+		@(require_results)
+		write_error :: proc(err: Maybe(Error), instr: Instruction) -> Maybe(Error) {
+			if err == nil do return nil
+
+			err := err.?
+			msg_template := "'%v' (%v addressing) cannot write: \"%s\""
+			return errorf(
+				err.type,
+				msg_template,
+				instr.type,
+				instr.addressing_mode,
+				err.msg,
+				severity = .Warning,
+			)
+		}
+
+		set_zn :: proc(console: ^Console, data: u8) {
+			console.cpu.status -= {.ZF, .NF}
+			if data == 0 do console.cpu.status += {.ZF}
+			if (data & 0x80) != 0 do console.cpu.status += {.NF}
+		}
+
+		// branch handles the logic for all conditional branch instructions
+		@(require_results)
+		branch :: proc(console: ^Console, condition: bool) -> (err: Maybe(Error)) {
+			if condition {
+				console.cpu.cycle_count += 1
+				address := console.cpu.pc + 1
+				rel_addr: u8
+				if rel_addr, err = console_read_from_address(console, address); err != nil {
+					err = errorf(
+						.Branch_Error,
+						"could not read relative address from $%04X",
+						address,
+					)
+				}
+
+				// + 2 to point to next instruction
+				jump_addr := u16(i16(console.cpu.pc) + 2 + i16(i8(rel_addr)))
+
+				if is_page_crossed(console.cpu.pc + 2, jump_addr) {
+					console.cpu.cycle_count += 1 // page cross adds another cycle
+				}
+				console.cpu.pc = jump_addr
+			} else {
+				console.cpu.pc += 2
+			}
+
+			return
+		}
 	}
 
 	stack_push :: proc(console: ^Console, data: u8) {
@@ -771,38 +830,6 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 		data, e := console_read_from_address(console, address)
 		assert(e == nil, "SP should never be outside of range $0100-$01FF")
 		return data
-	}
-
-	set_zn :: proc(console: ^Console, data: u8) {
-		console.cpu.status -= {.ZF, .NF}
-		if data == 0 do console.cpu.status += {.ZF}
-		if (data & 0x80) != 0 do console.cpu.status += {.NF}
-	}
-
-
-	// branch handles the logic for all conditional branch instructions
-	@(require_results)
-	branch :: proc(console: ^Console, condition: bool) -> (err: Maybe(Error)) {
-		if condition {
-			console.cpu.cycle_count += 1
-			address := console.cpu.pc + 1
-			rel_addr: u8
-			if rel_addr, err = console_read_from_address(console, address); err != nil {
-				err = errorf(.Branch_Error, "could not read relative address from $%04X", address)
-			}
-
-			// + 2 to point to next instruction
-			jump_addr := u16(i16(console.cpu.pc) + 2 + i16(i8(rel_addr)))
-
-			if is_page_crossed(console.cpu.pc + 2, jump_addr) {
-				console.cpu.cycle_count += 1 // page cross adds another cycle
-			}
-			console.cpu.pc = jump_addr
-		} else {
-			console.cpu.pc += 2
-		}
-
-		return
 	}
 }
 
