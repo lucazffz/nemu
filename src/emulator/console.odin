@@ -19,6 +19,8 @@ Console :: struct {
 	// stalls: int,
 	mapper:      Mapper,
 	cycle_count: int,
+	controller1: Controller,
+	controller2: Controller,
 }
 
 CPU_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1fff, .Closed} // 2KB ram mirrored 4 times
@@ -178,8 +180,11 @@ console_write_to_address :: proc(
 		ppu_write_to_mmio_register(console, data, address_offset) or_return
 	case 0x4000 ..< 0x4020:
 		// APU and I/O registers
-		if address == 0x4014 {
-			// write_to_oamdma(console, data)
+		switch address {
+		case 0x4014:
+		case 0x04016:
+			controller_write(&console.controller1, data)
+			controller_write(&console.controller2, data)
 		}
 	case 0x4020 ..< 0x6000:
 	// expansion ROM
@@ -218,9 +223,15 @@ console_read_from_address :: proc(
 		data = ppu_read_from_mmio_register(console, address_offset) or_return
 	case 0x4000 ..< 0x4020:
 		// APU and I/O registers
-		if address == 0x4014 {
+		switch address {
+		case 0x4014:
 			err = error(.Write_Only, "OAMDMA register at address $4014 is write-only")
+		case 0x4016:
+			data = controller_read(&console.controller1)
+		case 0x417:
+			data = controller_read(&console.controller2)
 		}
+
 	case 0x4020 ..< 0x6000:
 		// expansion ROM
 		err = errorf(

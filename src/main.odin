@@ -75,7 +75,7 @@ main :: proc() {
 	}
 
 	// === INIT CONSOLE ===
-	rom_file_path := #directory + "../../roms/Donkey Kong (USA) (GameCube Edition).nes"
+	rom_file_path := #directory + "../../roms/Ice Climber (USA, Europe).nes"
 	rom, err := os.read_entire_file_or_err(rom_file_path)
 	if err != nil {
 		log.errorf("ERROR: could not open file '%s', %v", rom_file_path, err)
@@ -180,11 +180,24 @@ main :: proc() {
 		if rl.IsKeyPressed(rl.KeyboardKey.SPACE) do should_run = !should_run
 		if rl.IsKeyPressed(rl.KeyboardKey.F3) do show_debug_io = !show_debug_io
 
+
 		frame_complete, cpu_complete: bool;err: Maybe(emulator.Error)
 		if (rl.IsKeyPressed(rl.KeyboardKey.S) || should_run) &&
 		   (console.cpu.instruction_count < brk_point_instruction || brk_point_instruction == 0) {
 			using emulator
 			for (should_run || !cpu_complete) && !frame_complete {
+				buttons: emulator.Buttons
+				if rl.IsKeyDown(rl.KeyboardKey.LEFT) do buttons += {.left}
+				if rl.IsKeyDown(rl.KeyboardKey.RIGHT) do buttons += {.right}
+				if rl.IsKeyDown(rl.KeyboardKey.UP) do buttons += {.up}
+				if rl.IsKeyDown(rl.KeyboardKey.DOWN) do buttons += {.down}
+				if rl.IsKeyDown(rl.KeyboardKey.Z) do buttons += {.a}
+				if rl.IsKeyDown(rl.KeyboardKey.X) do buttons += {.b}
+				if rl.IsKeyDown(rl.KeyboardKey.F1) do buttons += {.select}
+				if rl.IsKeyDown(rl.KeyboardKey.F2) do buttons += {.start}
+
+				emulator.controller_set_buttons(&console.controller1, buttons)
+
 				if frame_complete, cpu_complete, err = console_execute_clk_cycle(console);
 				   err != nil {
 					if err != last_err {
@@ -196,6 +209,7 @@ main :: proc() {
 			}
 
 			rl.UpdateTexture(game_view_texture, raw_data(console.ppu.pixel_buffer))
+
 
 			if show_debug_io && frame_complete {
 				for v, i in palette_index_buffer_0 {
