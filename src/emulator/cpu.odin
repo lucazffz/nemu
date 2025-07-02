@@ -29,6 +29,11 @@ CPU :: struct {
 	decmial_mode:        bool,
 	// will be nil if an interrupt is being handled
 	current_instruction: Maybe(Instruction),
+	dma_page:            u8,
+	dma_addr:            u8,
+	dma_data:            u8,
+	dma_transfer:        bool,
+	dma_dummy:           bool,
 }
 
 PAGE_1_BASE_ADDRESS :: 0x0100

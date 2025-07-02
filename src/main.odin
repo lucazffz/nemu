@@ -75,7 +75,7 @@ main :: proc() {
 	}
 
 	// === INIT CONSOLE ===
-	rom_file_path := #directory + "../../roms/Ice Climber (USA, Europe).nes"
+	rom_file_path := #directory + "../../roms/Donkey Kong (USA) (GameCube Edition).nes"
 	rom, err := os.read_entire_file_or_err(rom_file_path)
 	if err != nil {
 		log.errorf("ERROR: could not open file '%s', %v", rom_file_path, err)
@@ -295,6 +295,7 @@ render_debug_ui :: proc() {
 	@(static) show_ppu_state: bool = false
 	@(static) show_cpu_state: bool = false
 	@(static) show_ppu_palettes: bool = false
+	@(static) show_ppu_oam: bool = false
 	str_buf := make([]u8, 1024)
 	defer delete(str_buf)
 
@@ -305,6 +306,7 @@ render_debug_ui :: proc() {
 		imgui.Checkbox("CPU State", &show_cpu_state)
 		imgui.Checkbox("PPU State", &show_ppu_state)
 		imgui.Checkbox("Palettes", &show_ppu_palettes)
+		imgui.Checkbox("OAM", &show_ppu_oam)
 		imgui.InputScalar("pause at cycle", .U32, &brk_point_instruction)
 	}
 	imgui.EndMainMenuBar()
@@ -335,6 +337,21 @@ render_debug_ui :: proc() {
 				)
 			}
 		}
+		imgui.End()
+	}
+
+	if show_ppu_oam {
+		imgui.Begin("OAM", nil)
+		for sprite in console.ppu.oam.sprites {
+			imgui.Text(
+				"(%d, %d), ID: %d, AT: %d",
+				sprite.x_pos,
+				sprite.y_pos,
+				sprite.tile_index,
+				sprite.attributes,
+			)
+		}
+
 		imgui.End()
 	}
 

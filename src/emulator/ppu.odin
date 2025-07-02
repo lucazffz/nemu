@@ -2,6 +2,7 @@ package emulator
 
 import "core:fmt"
 import "core:log"
+import "core:slice"
 
 Color :: distinct [4]u8
 
@@ -81,8 +82,12 @@ PPU :: struct {
 	// nametable:             []u8,
 	vram:                    []u8,
 	oam:                     struct #raw_union {
-		sprites:  []Sprite,
-		raw_data: []u8,
+		sprites:  [64]Sprite,
+		raw_data: [256]u8,
+	},
+	secondary_oam:           struct #raw_union {
+		sprites:  [8]Sprite,
+		raw_data: [32]u8,
 	},
 	palette:                 []u8,
 	is_rendering:            bool, // active during scanlines -1 - 239
@@ -100,6 +105,13 @@ PPU :: struct {
 	bg_shifter_pattern_hi:   u16,
 	bg_shifter_attribute_lo: u16,
 	bg_shifter_attribute_hi: u16,
+	// during sprite initialization (visible scanlines, cycles 1-64) OAM reads
+	// from $2004 should always return 0xff
+	oam_always_read_ff:      bool,
+	// sprite_evaluation_index: uint,
+	n:                       uint,
+	secondary_oam_index:     uint,
+	current_sprite:          Sprite,
 }
 
 @(require_results)
@@ -162,31 +174,32 @@ ppu_read_from_mmio_register :: proc(
 	}
 
 	ppu_oam_read_from_address :: proc(ppu: ^PPU, address: u8) -> u8 {
+		if ppu.oam_always_read_ff do return 0xff
 		return ppu.oam.raw_data[address]
 	}
 
 	return
 }
 
-ppu_write_to_oamdma :: proc(console: ^Console, address: u8) {
-	// Writing to OAMDMA will cause an entire RAM page to be copied into OAM.
-	// This is implemented as 256 pairs of RAM reads and OAMDATA writes in the
-	// original hardware.
+// ppu_write_to_oamdma :: proc(console: ^Console, address: u8) {
+// 	// Writing to OAMDMA will cause an entire RAM page to be copied into OAM.
+// 	// This is implemented as 256 pairs of RAM reads and OAMDATA writes in the
+// 	// original hardware.
 
-	num_of_copies := copy(console.ppu.oam.raw_data, console.ram[address:address + 255])
-	assert(
-		num_of_copies == 256,
-		fmt.tprintf(
-			"did not copy from RAM to OAM correctly, expected 256 bytes to be copied, only %d was",
-			num_of_copies,
-		),
-	)
+// 	num_of_copies := copy(console.ppu.oam.raw_data, console.ram[address:address + 255])
+// 	assert(
+// 		num_of_copies == 256,
+// 		fmt.tprintf(
+// 			"did not copy from RAM to OAM correctly, expected 256 bytes to be copied, only %d was",
+// 			num_of_copies,
+// 		),
+// 	)
 
-	// @todo 513 or 514??? 
-	// suspend the CPU for 513 cycles
-	console.cpu.stall_count += 513
-	return
-}
+// 	// @todo 513 or 514??? 
+// 	// suspend the CPU for 512 cycles
+// 	console.cpu.stall_count += 512
+// 	return
+// 2
 
 @(require_results)
 ppu_write_to_mmio_register :: proc(
@@ -263,11 +276,12 @@ ppu_write_to_mmio_register :: proc(
 		panic(fmt.tprintf("unrecognized PPU register at address offset %02x", address_offset))
 	}
 
-	ppu_oam_write_to_address :: proc(ppu: ^PPU, data: u8, address: u8) {
-		ppu.oam.raw_data[address] = data
-		return
-	}
 
+	return
+}
+
+ppu_oam_write_to_address :: proc(ppu: ^PPU, data: u8, address: u8) {
+	ppu.oam.raw_data[address] = data
 	return
 }
 
@@ -349,14 +363,6 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 				// first plane
 				address := u16(table_index * 0x1000 + byte_offset + row + 0)
 				tile_lsb = ppu_read_from_address(console, address)
-				// ; err != nil {
-				// 	return errorf(
-				// 		.Pattern_Table_Read_Error,
-				// 		"could not read pattern table %d byte from $%04X",
-				// 		table_index,
-				// 		address,
-				// 	)
-				// }
 
 				// second plane
 				address = u16(table_index * 0x1000 + byte_offset + row + 8)
@@ -402,7 +408,14 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 
 	ppu := &console.ppu
 
+	// reset
 	ppu.is_rendering = false
+	ppu.oam_always_read_ff = false
+
+	// skip the first idle tick on the first visible scanline (0,0) on odd frames
+	if ppu.scanline == 0 && ppu.cycle == 0 {
+		ppu.cycle = 1
+	}
 
 	// reset PPU status during pre-render scanline
 	if ppu.scanline == -1 && ppu.cycle == 1 {
@@ -411,15 +424,12 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		ppu.status.sprite_overflow = false
 	}
 
+
+	// --- Handle background rendering ---
+
 	if ppu.scanline == -1 && ppu.cycle >= 280 && ppu.cycle < 305 {
 		transfer_vertical(ppu)
 	}
-
-	// skip the first idle tick on the first visible scanline (0,0) on odd frames
-	if ppu.scanline == 0 && ppu.cycle == 0 {
-		ppu.cycle = 1
-	}
-
 
 	// visible scanlines(0-239) + pre-render scanline (-1)
 	// The pre-render scanline (-1) is a dummy scanline whose purpose is
@@ -495,12 +505,6 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 			transfer_horizontal(ppu)
 		}
 
-		// sprite tile loading interval (pre-render and visible scanlines)
-		if ppu.cycle >= 257 && ppu.cycle <= 320 {
-			ppu.oamaddr = 0
-
-		}
-
 
 		// @todo is this needed???
 		// if ppu.cycle == 338 || ppu.cycle == 340 {
@@ -529,6 +533,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 			c.a = 0xff
 			ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
 		}
+
 	}
 
 	// do nothing during scanline 240
@@ -543,6 +548,47 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 	// Do nothing during 242-260, this is the vertical blank period
 	// Well 241 is also included in vblank but yeah
 
+	// --- Handle sprite shit ---
+	// sprite tile loading interval (pre-render and visible scanlines)
+	// if ppu.cycle >= 257 && ppu.cycle <= 320 {
+	// 	ppu.oamaddr = 0
+
+	// }
+
+	// if ppu.scanline >= -1 && ppu.scanline <= 239 {
+	// 	// initialize secondary OAM during cycles 1-64
+	// 	if ppu.cycle >= 1 && ppu.cycle <= 64 {
+	// 		ppu.oam_always_read_ff = true
+	// 		ppu.secondary_oam.raw_data[ppu.cycle - 1] = 0xff
+	// 	}
+
+	// 	if ppu.cycle >= 65 && ppu.cycle <= 256 {
+	// 		if ppu.secondary_oam_index < 8 {
+	// 			if ppu.cycle & 0x1 == 1 {
+	// 				// cycle is odd, read data from OAM
+	// 				ppu.current_sprite = ppu.oam.sprites[ppu.n]
+
+	// 			} else {
+	// 				// cycle is even, write to secondary OAM
+	// 				if sprite_y_coordinate_in_range(ppu.current_sprite.y_pos) {
+	// 					ppu.secondary_oam.sprites[ppu.secondary_oam_index] = ppu.current_sprite
+	// 					ppu.secondary_oam_index += 1
+	// 				} else {
+	// 					ppu.secondary_oam.sprites[ppu.secondary_oam_index].y_pos =
+	// 						ppu.current_sprite.y_pos
+	// 					ppu.secondary_oam_index += 1
+	// 				}
+	// 			}
+
+	// 			ppu.n += 1
+	// 		} else {
+
+	// 		}
+
+	// 	}
+
+	// }
+
 	ppu.cycle += 1
 	if ppu.cycle >= 341 {
 		ppu.cycle = 0
@@ -555,6 +601,12 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 	}
 
 	return
+
+	sprite_y_coordinate_in_range :: proc(y: u8) -> bool {
+		// @todo implement
+		return true
+
+	}
 
 	transfer_horizontal :: proc(ppu: ^PPU) {
 		if ppu.mask.enable_background_rendering || ppu.mask.enable_sprite_rendering {

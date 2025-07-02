@@ -55,7 +55,7 @@ console_make :: proc(
 	// pattern table and nametable are stored in cartridge (mapper) so
 	// dont need to allocate them here
 	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
-	console.ppu.oam.raw_data = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
+	// console.ppu.oam.raw_data = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
 	console.ppu.vram = make_slice([]u8, ppu_vram_size, allocator, loc) or_return
 	console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
 	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
@@ -70,7 +70,7 @@ console_delete :: proc(
 	loc := #caller_location,
 ) -> runtime.Allocator_Error {
 	delete_slice(console.ram, allocator, loc) or_return
-	delete_slice(console.ppu.oam.raw_data, allocator, loc) or_return
+	// delete_slice(console.ppu.oam.raw_data, allocator, loc) or_return
 	delete_slice(console.ppu.palette, allocator, loc) or_return
 	delete_slice(console.ppu.vram, allocator, loc) or_return
 	// delete_slice(console.ppu.pixel_buffer, allocator, loc) or_return
@@ -141,8 +141,34 @@ console_execute_clk_cycle :: proc(
 ) {
 
 	frame_complete = ppu_execute_clk_cycle(console)
+
 	if console.cycle_count % 3 == 0 {
-		cpu_complete, err = cpu_execute_clk_cycle(console)
+		if console.cpu.dma_transfer {
+			if console.cpu.dma_dummy {
+				if console.cycle_count & 0x1 == 1 do console.cpu.dma_dummy = false
+			} else {
+				if console.cycle_count & 0x1 == 0 {
+					console.cpu.dma_data, _ = console_read_from_address(
+						console,
+						u16(console.cpu.dma_page) << 8 | u16(console.cpu.dma_addr),
+					)
+				} else {
+					ppu_oam_write_to_address(
+						&console.ppu,
+						console.cpu.dma_data,
+						console.cpu.dma_addr,
+					)
+					console.cpu.dma_addr += 1
+
+					if console.cpu.dma_addr == 0x0 {
+						console.cpu.dma_transfer = false
+						console.cpu.dma_dummy = true
+					}
+				}
+			}
+		} else {
+			cpu_complete, err = cpu_execute_clk_cycle(console)
+		}
 	}
 
 	console.cycle_count += 1
@@ -182,8 +208,9 @@ console_write_to_address :: proc(
 		// APU and I/O registers
 		switch address {
 		case 0x4014:
-			// use the address high byte
-			ppu_write_to_oamdma(console, u8(address >> 8))
+			console.cpu.dma_page = data
+			console.cpu.dma_addr = 0x0
+			console.cpu.dma_transfer = true
 		case 0x04016:
 			controller_write(&console.controller1, data)
 			controller_write(&console.controller2, data)
