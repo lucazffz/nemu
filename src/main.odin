@@ -223,7 +223,6 @@ main :: proc() {
 			}
 		}
 
-
 		screen_width := rl.GetScreenWidth()
 		screen_height := rl.GetScreenHeight()
 		game_view_rectangle: rl.Rectangle

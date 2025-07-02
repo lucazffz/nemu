@@ -14,6 +14,19 @@ Loopy_Register :: bit_field u16 {
 	_unused:     u16 | 1,
 }
 
+Sprite :: struct {
+	y_pos:      u8,
+	tile_index: u8,
+	attributes: bit_field u8 {
+		palette_index:     uint | 2,
+		_unused:           u8   | 1,
+		priority:          u8   | 1, // 0: in front of background, 1: behind background
+		flip_horizontally: bool | 1,
+		flip_vertically:   bool | 1,
+	},
+	x_pos:      u8,
+}
+
 PPU :: struct {
 	// Miscellaneous settings ($2000 write-only)
 	// mmio_register_bank:     struct {
@@ -45,15 +58,15 @@ PPU :: struct {
 		vblank:          bool | 1, // cleared on read (unreliable)
 	},
 	// Sprite RAM address ($2003 write-only)
-	// oamaddr:             u8,
+	oamaddr:                 u8,
 	// Sprite RAM data ($2004 read-write)
-	// oamdata:   u8,
+	// oamdata:                 u8,
 	// X and Y scroll ($2005 write-only)
 	// ppuscroll:           u8,
 	// VRAM address ($2006 write-only)
-	// ppuaddr:   Loopy_Register,
+	// ppuaddr:                 Loopy_Register,
 	// VRAM data ($2007 read-write)
-	// ppudata:   u8,
+	// ppudata:                 u8,
 	// Sprite DMA ($4014 write-only)
 	// oamdma:              u8,
 	// },
@@ -67,9 +80,12 @@ PPU :: struct {
 	// pattern_table:         []u8,
 	// nametable:             []u8,
 	vram:                    []u8,
-	oam:                     []u8,
+	oam:                     struct #raw_union {
+		sprites:  []Sprite,
+		raw_data: []u8,
+	},
 	palette:                 []u8,
-	// is_rendering:            bool,
+	is_rendering:            bool, // active during scanlines -1 - 239
 	// frame_complete:         bool,
 	frame_count:             u64,
 	cycle:                   int,
@@ -112,12 +128,8 @@ ppu_read_from_mmio_register :: proc(
 		// OAMADDR - Sprite RAM address ($2003 write-only)
 		err = error(.Write_Only, "cannot read from $2003, OAMADDR is write-only", .Warning)
 	case 4:
-	// OAMDATA - Sprite RAM data ($2004 read-write)
-	// @todo implement
-	// data = ppu_oam_read_from_address(
-	// 	&console.ppu,
-	// 	console.ppu.mmio_register_bank.oamaddr,
-	// ) or_return
+		// OAMDATA - Sprite RAM data ($2004 read-write)
+		data = ppu_oam_read_from_address(&console.ppu, console.ppu.oamaddr)
 	case 5:
 		// PPUSCROLL - X and Y scroll ($2005 write-only)
 		err = error(.Write_Only, "cannot read from $2005, PPUSCROLL is write-only", .Warning)
@@ -149,23 +161,19 @@ ppu_read_from_mmio_register :: proc(
 		panic(fmt.tprintf("unrecognized PPU register at address offset %02x", address_offset))
 	}
 
-	// ppu_oam_read_from_address :: proc(ppu: ^PPU, address: u8) -> (data: u8, err: Maybe(Error)) {
-	// 	data = ppu.oam[address]
-	// 	return
-	// }
+	ppu_oam_read_from_address :: proc(ppu: ^PPU, address: u8) -> u8 {
+		return ppu.oam.raw_data[address]
+	}
 
 	return
 }
 
-write_to_oamdma :: proc(console: ^Console, data: u8) {
-	// @todo stall CPU for 513 or 514 cycles after writing
+ppu_write_to_oamdma :: proc(console: ^Console, address: u8) {
 	// Writing to OAMDMA will cause an entire RAM page to be copied into OAM.
 	// This is implemented as 256 pairs of RAM reads and OAMDATA writes in the
 	// original hardware.
-	// if console.ppu.is_rendering do return
 
-	// console.ppu.mmio_register_bank.oamdma = data
-	num_of_copies := copy(console.ppu.oam, console.ram[data:data + 255])
+	num_of_copies := copy(console.ppu.oam.raw_data, console.ram[address:address + 255])
 	assert(
 		num_of_copies == 256,
 		fmt.tprintf(
@@ -173,8 +181,10 @@ write_to_oamdma :: proc(console: ^Console, data: u8) {
 			num_of_copies,
 		),
 	)
-	// @fix should this be included?
-	// console.ppu.mmio_register_bank.oamaddr = 0 // OAMADDR will be reset
+
+	// @todo 513 or 514??? 
+	// suspend the CPU for 513 cycles
+	console.cpu.stall_count += 513
 	return
 }
 
@@ -204,30 +214,22 @@ ppu_write_to_mmio_register :: proc(
 			severity = .Warning,
 		)
 	case 3:
-	// OAMADDR - Sprite RAM address ($2003 write-only)
-	// @todo implement
-	// console.ppu.t = auto_cast data
+		// OAMADDR - Sprite RAM address ($2003 write-only)
+		console.ppu.oamaddr = data
 	case 4:
-	// OAMDATA - Sprite RAM data ($2004 read-write)
-	// @todo implement
-	// if console.ppu.is_rendering {
-	// 	// do not write if rendering
-	// 	// preform buggy OAMADDR increment using only 6 highest bits
-	// 	// @todo maybe remove buggy increment
-	// 	addr := console.ppu.mmio_register_bank.oamaddr
-	// 	addr = (((addr >> 2) + 1) << 2) | (addr & 0x3)
-	// 	console.ppu.mmio_register_bank.oamaddr = addr
-	// } else {
-	// console.ppu.mmio_register_bank.oamdata = data
-	// // when writing to OAMDATA, the data is immediately written to OAM
-	// ppu_oam_write_to_address(
-	// 	&console.ppu,
-	// 	data,
-	// 	console.ppu.mmio_register_bank.oamaddr,
-	// ) or_return
-	// // writes will increment OAMADDR after write to OAMDATA, reads do not
-	// console.ppu.mmio_register_bank.oamaddr += 1
-	// }
+		// OAMDATA - Sprite RAM data ($2004 read-write)
+		// do not write if rendering
+		// preform buggy OAMADDR increment using only 6 highest bits
+		if console.ppu.is_rendering {
+			addr := console.ppu.oamaddr
+			addr = (((addr >> 2) + 1) << 2) | (addr & 0x3)
+			console.ppu.oamaddr = addr
+		} else {
+			// when writing to OAMDATA, the data is immediately written to OAM
+			ppu_oam_write_to_address(&console.ppu, data, console.ppu.oamaddr)
+			// writes will increment OAMADDR after write to OAMDATA, reads do not
+			console.ppu.oamaddr += 1
+		}
 	case 5:
 		// PPUSCROLL - X and Y scroll ($2005 write-only)
 		if console.ppu.w == 0 {
@@ -261,10 +263,11 @@ ppu_write_to_mmio_register :: proc(
 		panic(fmt.tprintf("unrecognized PPU register at address offset %02x", address_offset))
 	}
 
-	// ppu_oam_write_to_address :: proc(ppu: ^PPU, data: u8, address: u8) -> (err: Maybe(Error)) {
-	// 	ppu.oam[address] = data
-	// 	return
-	// }
+	ppu_oam_write_to_address :: proc(ppu: ^PPU, data: u8, address: u8) {
+		ppu.oam.raw_data[address] = data
+		return
+	}
+
 	return
 }
 
@@ -399,6 +402,8 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 
 	ppu := &console.ppu
 
+	ppu.is_rendering = false
+
 	// reset PPU status during pre-render scanline
 	if ppu.scanline == -1 && ppu.cycle == 1 {
 		ppu.status.vblank = false
@@ -421,6 +426,9 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 	// to fill the shift registers for the first visible scanline (0).
 	// It will do the same operations as a normal visible scanline.
 	if ppu.scanline >= -1 && ppu.scanline < 240 {
+		if ppu.mask.enable_background_rendering || ppu.mask.enable_sprite_rendering {
+			ppu.is_rendering = true
+		}
 		/*
 		Fetch the data for tile. It require 4 memory accesses: 
 
@@ -480,13 +488,19 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 			}
 		}
 
-
 		if ppu.cycle == 256 do fine_y_increment_with_overflow(ppu)
 
 		if ppu.cycle == 257 {
 			// shifters_load_latched_data(ppu) // @todo should include???
 			transfer_horizontal(ppu)
 		}
+
+		// sprite tile loading interval (pre-render and visible scanlines)
+		if ppu.cycle >= 257 && ppu.cycle <= 320 {
+			ppu.oamaddr = 0
+
+		}
+
 
 		// @todo is this needed???
 		// if ppu.cycle == 338 || ppu.cycle == 340 {

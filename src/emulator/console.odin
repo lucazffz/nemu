@@ -55,7 +55,7 @@ console_make :: proc(
 	// pattern table and nametable are stored in cartridge (mapper) so
 	// dont need to allocate them here
 	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
-	console.ppu.oam = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
+	console.ppu.oam.raw_data = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
 	console.ppu.vram = make_slice([]u8, ppu_vram_size, allocator, loc) or_return
 	console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
 	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
@@ -70,7 +70,7 @@ console_delete :: proc(
 	loc := #caller_location,
 ) -> runtime.Allocator_Error {
 	delete_slice(console.ram, allocator, loc) or_return
-	delete_slice(console.ppu.oam, allocator, loc) or_return
+	delete_slice(console.ppu.oam.raw_data, allocator, loc) or_return
 	delete_slice(console.ppu.palette, allocator, loc) or_return
 	delete_slice(console.ppu.vram, allocator, loc) or_return
 	// delete_slice(console.ppu.pixel_buffer, allocator, loc) or_return
@@ -182,17 +182,19 @@ console_write_to_address :: proc(
 		// APU and I/O registers
 		switch address {
 		case 0x4014:
+			// use the address high byte
+			ppu_write_to_oamdma(console, u8(address >> 8))
 		case 0x04016:
 			controller_write(&console.controller1, data)
 			controller_write(&console.controller2, data)
 		}
 	case 0x4020 ..< 0x6000:
-	// expansion ROM
-	// err = errorf(
-	// 	.Invalid_Address,
-	// 	"cannot write to $04X, expansion ROM not supported ($4020-$5FFF)",
-	// 	address,
-	// )
+		// expansion ROM
+		err = errorf(
+			.Invalid_Address,
+			"cannot write to $04X, expansion ROM not supported ($4020-$5FFF)",
+			address,
+		)
 	case 0x6000 ..= 0xffff:
 		// mapper
 		mapper_write_to_cpu_address_space(console.mapper, address, data) or_return
