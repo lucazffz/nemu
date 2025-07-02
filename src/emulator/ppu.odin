@@ -20,7 +20,7 @@ Sprite :: struct {
 	tile_index: u8,
 	attributes: bit_field u8 {
 		palette_index:     uint | 2,
-		_unused:           u8   | 1,
+		_unused:           u8   | 3,
 		priority:          u8   | 1, // 0: in front of background, 1: behind background
 		flip_horizontally: bool | 1,
 		flip_vertically:   bool | 1,
@@ -31,7 +31,7 @@ Sprite :: struct {
 PPU :: struct {
 	// Miscellaneous settings ($2000 write-only)
 	// mmio_register_bank:     struct {
-	ctrl:                    bit_field u8 {
+	ctrl:                       bit_field u8 {
 		nametable_base_address:           u8   | 2, // 0: $2000, 1: $2400, 2: $2800, 3: $2C00
 		vram_address_increment:           u8   | 1, // 0: add 1, going across, 1: add 32 going down
 		sprite_pattern_table_address:     u8   | 1, // 0: $0000, 1: $1000 (ignored for 8x16 sprites)
@@ -41,7 +41,7 @@ PPU :: struct {
 		vblank_nmi_enable:                bool | 1, // 0: off, 1: on
 	},
 	// Rendering settings ($2001 write-only)
-	mask:                    bit_field u8 {
+	mask:                       bit_field u8 {
 		greyscale:                   bool | 1, // 0: normal color, 1: greyscale
 		show_background_in_margin:   bool | 1, // 0: hide, 1: show background in leftmost 8 pixels of screen
 		show_sprites_in_margin:      bool | 1, // 0: hide, 1: show sprites in leftmost 8 pixels of screen
@@ -52,14 +52,14 @@ PPU :: struct {
 		emphasize_blue:              bool | 1,
 	},
 	// Rendering events ($2002 read-only)
-	status:                  bit_field u8 {
+	status:                     bit_field u8 {
 		_unused:         u8   | 5,
 		sprite_overflow: bool | 1,
 		sprite_0_hit:    bool | 1,
 		vblank:          bool | 1, // cleared on read (unreliable)
 	},
 	// Sprite RAM address ($2003 write-only)
-	oamaddr:                 u8,
+	oamaddr:                    u8,
 	// Sprite RAM data ($2004 read-write)
 	// oamdata:                 u8,
 	// X and Y scroll ($2005 write-only)
@@ -72,46 +72,52 @@ PPU :: struct {
 	// oamdma:              u8,
 	// },
 	// internal_register_bank: struct {
-	read_buffer:             u8,
-	v:                       Loopy_Register, // current VRAM address
-	t:                       Loopy_Register, // temporary VRAM address (addr of top left onscreen tile)
-	x:                       u8, // fine x scroll, 3 bits
-	w:                       u8, // first or second byte write toggle, 1 bit
+	read_buffer:                u8,
+	v:                          Loopy_Register, // current VRAM address
+	t:                          Loopy_Register, // temporary VRAM address (addr of top left onscreen tile)
+	x:                          u8, // fine x scroll, 3 bits
+	w:                          u8, // first or second byte write toggle, 1 bit
 	// },
 	// pattern_table:         []u8,
 	// nametable:             []u8,
-	vram:                    []u8,
-	oam:                     struct #raw_union {
+	vram:                       []u8,
+	oam:                        struct #raw_union {
 		sprites:  [64]Sprite,
 		raw_data: [256]u8,
 	},
-	secondary_oam:           struct #raw_union {
+	secondary_oam:              struct #raw_union {
 		sprites:  [8]Sprite,
 		raw_data: [32]u8,
 	},
-	palette:                 []u8,
-	is_rendering:            bool, // active during scanlines -1 - 239
+	palette:                    []u8,
+	is_rendering:               bool, // active during scanlines -1 - 239
 	// frame_complete:         bool,
-	frame_count:             u64,
-	cycle:                   int,
-	scanline:                int,
-	pixel_buffer:            []Color,
-	cycle_count:             int,
-	bg_next_tile_id:         u8,
-	bg_next_tile_attribute:  u8,
-	bg_next_tile_lsb:        u8,
-	bg_next_tile_msb:        u8,
-	bg_shifter_pattern_lo:   u16,
-	bg_shifter_pattern_hi:   u16,
-	bg_shifter_attribute_lo: u16,
-	bg_shifter_attribute_hi: u16,
+	frame_count:                u64,
+	cycle:                      int,
+	scanline:                   int,
+	pixel_buffer:               []Color,
+	cycle_count:                int,
+	bg_next_tile_id:            u8,
+	bg_next_tile_attribute:     u8,
+	bg_next_tile_lsb:           u8,
+	bg_next_tile_msb:           u8,
+	bg_shifter_pattern_lo:      u16,
+	bg_shifter_pattern_hi:      u16,
+	bg_shifter_attribute_lo:    u16,
+	bg_shifter_attribute_hi:    u16,
 	// during sprite initialization (visible scanlines, cycles 1-64) OAM reads
 	// from $2004 should always return 0xff
-	oam_always_read_ff:      bool,
+	oam_always_read_ff:         bool,
 	// sprite_evaluation_index: uint,
-	n:                       uint,
-	secondary_oam_index:     uint,
-	current_sprite:          Sprite,
+	// n:                       uint,
+	// secondary_oam_index:     uint,
+	sprite_count:               uint,
+	sprite_shifter_pattern_lo:  [8]u8,
+	sprite_shifter_pattern_hi:  [8]u8,
+	sprite_zero_hit_possible:   bool,
+	sprite_zero_being_rendered: bool,
+
+	// current_sprite:          Sprite,
 }
 
 @(require_results)
@@ -377,7 +383,7 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 				// }
 
 				for col in 0 ..< 8 {
-					pixel_palette_offset := (tile_lsb & 0x01) + (tile_msb & 0x01)
+					pixel_palette_offset := ((tile_lsb & 0x01) << 1) | (tile_msb & 0x01)
 					tile_lsb >>= 1;tile_msb >>= 1
 					x := ntile_x * 8 + (7 - col)
 					y := ntile_y * 8 + row
@@ -422,6 +428,9 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		ppu.status.vblank = false
 		ppu.status.sprite_0_hit = false
 		ppu.status.sprite_overflow = false
+
+		slice.fill(ppu.sprite_shifter_pattern_lo[:], 0)
+		slice.fill(ppu.sprite_shifter_pattern_hi[:], 0)
 	}
 
 
@@ -514,26 +523,119 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		// 	) or_return
 		// }
 
+		// @Note Sprite rendering does not follow the NES hardware timing.
+		// Everything is calculated during the first non-visible cycle of each scanline.
+		// This may cause compatability issues with certain games.
+		sprite_evaluation: {
+			if ppu.cycle == 257 && ppu.scanline >= 0 {
+				// Sprite initialization
+				slice.fill(ppu.secondary_oam.raw_data[:], 0xff)
+				ppu.sprite_count = 0
+				ppu.sprite_zero_hit_possible = false
 
-		if ppu.cycle < 256 && ppu.scanline != -1 {
-			bg_palette, bg_pixel: uint
-			if ppu.mask.enable_background_rendering {
-				bit_mux: u16 = 0x8000 >> ppu.x
+				oam_entry_num := 0
+				// iterate one extra sprite count to be able to determine
+				// value for sprite overflow flag
+				for oam_entry_num < 64 && ppu.sprite_count < 9 {
+					diff := int(ppu.scanline) - int(ppu.oam.sprites[oam_entry_num].y_pos)
 
-				p0_pixel := uint((ppu.bg_shifter_pattern_lo & bit_mux) > 0)
-				p1_pixel := uint((ppu.bg_shifter_pattern_hi & bit_mux) > 0)
-				bg_pixel = (p1_pixel << 1) | p0_pixel
+					// sprite is visible on next scanline
+					if diff >= 0 && diff < (ppu.ctrl.sprite_size == 1 ? 16 : 8) {
+						if ppu.sprite_count < 8 {
+							if oam_entry_num == 0 {
+								ppu.sprite_zero_hit_possible = true
+							}
 
-				bg_pal0 := uint((ppu.bg_shifter_attribute_lo & bit_mux) > 0)
-				bg_pal1 := uint((ppu.bg_shifter_attribute_hi & bit_mux) > 0)
-				bg_palette = (bg_pal1 << 1) | bg_pal0
+							// copy sprite from OAM to secondary OAM
+							ppu.secondary_oam.sprites[ppu.sprite_count] =
+								ppu.oam.sprites[oam_entry_num]
+							ppu.sprite_count += 1
+						}
+					}
+
+					oam_entry_num += 1
+				}
+
+				ppu.status.sprite_overflow = ppu.sprite_count > 8
 			}
 
-			c := ppu_get_color_from_palette(console, bg_palette, bg_pixel)
-			c.a = 0xff
-			ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
 		}
 
+		sprite_data_fetch: {
+			// last cycle of scanline
+			if ppu.cycle == 340 {
+				for sprite, i in ppu.secondary_oam.sprites[:ppu.sprite_count] {
+					sprite_pattern_bits_lo, sprite_pattern_bits_hi: u8
+					sprite_pattern_addr_lo, sprite_pattern_addr_hi: u16
+
+					if ppu.ctrl.sprite_size == 0 {
+						// 8x8 sprite mode
+						if !sprite.attributes.flip_vertically {
+							sprite_pattern_addr_lo =
+								(u16(ppu.ctrl.sprite_pattern_table_address) << 12) |
+								(u16(sprite.tile_index) << 4) |
+								u16(ppu.scanline - int(sprite.y_pos))
+						} else {
+							sprite_pattern_addr_lo =
+								(u16(ppu.ctrl.sprite_pattern_table_address) << 12) |
+								(u16(sprite.tile_index) << 4) |
+								u16(7 - (ppu.scanline - int(sprite.y_pos)))
+						}
+					} else {
+						// 8x16 sprite mode
+						if !sprite.attributes.flip_vertically {
+							// top half of tile
+							if ppu.scanline - int(sprite.y_pos) < 8 {
+								sprite_pattern_addr_lo =
+									(u16(sprite.tile_index & 0x01) << 12) |
+									(u16(sprite.tile_index & 0xfe) << 4) |
+									(u16(ppu.scanline - int(sprite.y_pos)) & 0x07)
+							} else {
+								// bottom half of tile
+								sprite_pattern_addr_lo =
+									(u16(sprite.tile_index & 0x01) << 12) |
+									((u16(sprite.tile_index & 0xfe) + 1) << 4) |
+									(u16(ppu.scanline - int(sprite.y_pos)) & 0x07)
+							}
+						} else {
+							// top half of tile
+							if ppu.scanline - int(sprite.y_pos) < 8 {
+								sprite_pattern_addr_lo =
+									(u16(sprite.tile_index & 0x01) << 12) |
+									(u16(sprite.tile_index & 0xfe) << 4) |
+									(u16(7 - (ppu.scanline - int(sprite.y_pos))) & 0x07)
+							} else {
+								// bottom half of tile
+								sprite_pattern_addr_lo =
+									(u16(sprite.tile_index & 0x01) << 12) |
+									((u16(sprite.tile_index & 0xfe) + 1) << 4) |
+									(u16(7 - ppu.scanline - int(sprite.y_pos) & 0x07))
+							}
+						}
+					}
+
+					sprite_pattern_addr_hi = sprite_pattern_addr_lo + 8
+					sprite_pattern_bits_lo = ppu_read_from_address(console, sprite_pattern_addr_lo)
+					sprite_pattern_bits_hi = ppu_read_from_address(console, sprite_pattern_addr_hi)
+
+					if sprite.attributes.flip_horizontally {
+						sprite_pattern_bits_lo = flip_byte(sprite_pattern_bits_lo)
+						sprite_pattern_bits_hi = flip_byte(sprite_pattern_bits_hi)
+
+						flip_byte :: proc(b: u8) -> u8 {
+							b := b
+							b = (b & 0xf0) >> 4 | (b & 0x0f) << 4
+							b = (b & 0xcc) >> 2 | (b & 0x33) << 2
+							b = (b & 0xaa) >> 1 | (b & 0x55) << 1
+							return b
+						}
+					}
+
+					ppu.sprite_shifter_pattern_lo[i] = sprite_pattern_bits_lo
+					ppu.sprite_shifter_pattern_hi[i] = sprite_pattern_bits_hi
+				}
+			}
+		}
 	}
 
 	// do nothing during scanline 240
@@ -548,46 +650,88 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 	// Do nothing during 242-260, this is the vertical blank period
 	// Well 241 is also included in vblank but yeah
 
-	// --- Handle sprite shit ---
-	// sprite tile loading interval (pre-render and visible scanlines)
-	// if ppu.cycle >= 257 && ppu.cycle <= 320 {
-	// 	ppu.oamaddr = 0
+	fg_pixel, fg_palette, fg_priority: uint
 
-	// }
+	sprite_rendering: {
+		if ppu.mask.enable_sprite_rendering {
+			ppu.sprite_zero_being_rendered = false
 
-	// if ppu.scanline >= -1 && ppu.scanline <= 239 {
-	// 	// initialize secondary OAM during cycles 1-64
-	// 	if ppu.cycle >= 1 && ppu.cycle <= 64 {
-	// 		ppu.oam_always_read_ff = true
-	// 		ppu.secondary_oam.raw_data[ppu.cycle - 1] = 0xff
-	// 	}
+			for sprite, i in ppu.secondary_oam.sprites[:ppu.sprite_count] {
+				if sprite.x_pos == 0 {
+					fg_pixel_lo := uint(ppu.sprite_shifter_pattern_lo[i] & 0x80 > 0)
+					fg_pixel_hi := uint(ppu.sprite_shifter_pattern_hi[i] & 0x80 > 0)
 
-	// 	if ppu.cycle >= 65 && ppu.cycle <= 256 {
-	// 		if ppu.secondary_oam_index < 8 {
-	// 			if ppu.cycle & 0x1 == 1 {
-	// 				// cycle is odd, read data from OAM
-	// 				ppu.current_sprite = ppu.oam.sprites[ppu.n]
+					fg_pixel = uint((fg_pixel_lo << 1) | fg_pixel_hi)
+					fg_palette = uint(sprite.attributes.palette_index)
+					fg_priority = uint(sprite.attributes.priority)
 
-	// 			} else {
-	// 				// cycle is even, write to secondary OAM
-	// 				if sprite_y_coordinate_in_range(ppu.current_sprite.y_pos) {
-	// 					ppu.secondary_oam.sprites[ppu.secondary_oam_index] = ppu.current_sprite
-	// 					ppu.secondary_oam_index += 1
-	// 				} else {
-	// 					ppu.secondary_oam.sprites[ppu.secondary_oam_index].y_pos =
-	// 						ppu.current_sprite.y_pos
-	// 					ppu.secondary_oam_index += 1
-	// 				}
-	// 			}
+					if fg_pixel != 0 {
+						if i == 0 do ppu.sprite_zero_being_rendered = true
+						break sprite_rendering
+					}
+				}
 
-	// 			ppu.n += 1
-	// 		} else {
+			}
+		}
 
-	// 		}
+	}
 
-	// 	}
+	bg_palette, bg_pixel: uint
 
-	// }
+	background_rendering: {
+		if ppu.mask.enable_background_rendering {
+			bit_mux: u16 = 0x8000 >> ppu.x
+
+			p0_pixel := uint((ppu.bg_shifter_pattern_lo & bit_mux) > 0)
+			p1_pixel := uint((ppu.bg_shifter_pattern_hi & bit_mux) > 0)
+			bg_pixel = (p1_pixel << 1) | p0_pixel
+
+			bg_pal0 := uint((ppu.bg_shifter_attribute_lo & bit_mux) > 0)
+			bg_pal1 := uint((ppu.bg_shifter_attribute_hi & bit_mux) > 0)
+			bg_palette = (bg_pal1 << 1) | bg_pal0
+		}
+	}
+
+	pixel, palette: uint
+
+	if bg_pixel == 0 && fg_pixel == 0 {
+		pixel = 0x0
+		palette = 0x0
+	} else if bg_pixel == 0 && fg_pixel > 0 {
+		pixel = fg_pixel
+		palette = fg_palette
+	} else if bg_pixel > 0 && fg_pixel == 0 {
+		pixel = bg_pixel
+		palette = bg_palette
+	} else if bg_pixel > 0 && bg_pixel > 0 {
+		if fg_priority == 0 {
+			pixel = fg_pixel
+			palette = fg_palette
+		} else {
+			pixel = bg_pixel
+			palette = bg_palette
+		}
+
+		if ppu.sprite_zero_hit_possible && ppu.sprite_zero_being_rendered {
+			if ppu.mask.enable_background_rendering && ppu.mask.enable_sprite_rendering {
+				if !(ppu.mask.show_background_in_margin | ppu.mask.show_sprites_in_margin) {
+					if ppu.cycle >= 9 && ppu.cycle < 258 {
+						ppu.status.sprite_0_hit = true
+					}
+				} else {
+					if ppu.cycle >= 1 && ppu.cycle < 258 {
+						ppu.status.sprite_0_hit = true
+					}
+				}
+			}
+		}
+	}
+
+	if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
+		c := ppu_get_color_from_palette(console, palette, pixel)
+		c.a = 0xff
+		ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
+	}
 
 	ppu.cycle += 1
 	if ppu.cycle >= 341 {
@@ -601,12 +745,6 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 	}
 
 	return
-
-	sprite_y_coordinate_in_range :: proc(y: u8) -> bool {
-		// @todo implement
-		return true
-
-	}
 
 	transfer_horizontal :: proc(ppu: ^PPU) {
 		if ppu.mask.enable_background_rendering || ppu.mask.enable_sprite_rendering {
@@ -677,6 +815,18 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 			ppu.bg_shifter_pattern_hi <<= 1
 			ppu.bg_shifter_attribute_lo <<= 1
 			ppu.bg_shifter_attribute_hi <<= 1
+		}
+
+		// only shift the sprite is visible
+		if ppu.mask.enable_sprite_rendering && ppu.cycle >= 1 && ppu.cycle < 258 {
+			for &sprite, i in ppu.secondary_oam.sprites[:ppu.sprite_count] {
+				if sprite.x_pos > 0 {
+					sprite.x_pos -= 1
+				} else {
+					ppu.sprite_shifter_pattern_lo[i] <<= 1
+					ppu.sprite_shifter_pattern_hi[i] <<= 1
+				}
+			}
 		}
 	}
 }
