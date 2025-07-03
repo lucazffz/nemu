@@ -75,7 +75,7 @@ main :: proc() {
 	}
 
 	// === INIT CONSOLE ===
-	rom_file_path := #directory + "../../roms/Super Mario Bros. (World).nes"
+	rom_file_path := #directory + "../../roms/Donkey Kong (USA) (GameCube Edition).nes"
 	rom, err := os.read_entire_file_or_err(rom_file_path)
 	if err != nil {
 		log.errorf("ERROR: could not open file '%s', %v", rom_file_path, err)
@@ -193,8 +193,8 @@ main :: proc() {
 				if rl.IsKeyDown(rl.KeyboardKey.DOWN) do buttons += {.down}
 				if rl.IsKeyDown(rl.KeyboardKey.X) do buttons += {.a}
 				if rl.IsKeyDown(rl.KeyboardKey.Z) do buttons += {.b}
-				if rl.IsKeyDown(rl.KeyboardKey.KP_1) do buttons += {.select}
-				if rl.IsKeyDown(rl.KeyboardKey.KP_2) do buttons += {.start}
+				if rl.IsKeyDown(rl.KeyboardKey.ONE) do buttons += {.select}
+				if rl.IsKeyDown(rl.KeyboardKey.TWO) do buttons += {.start}
 
 				if rl.IsGamepadAvailable(0) {
 					if rl.IsGamepadButtonDown(0, rl.GamepadButton.LEFT_FACE_LEFT) do buttons += {.left}
