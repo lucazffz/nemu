@@ -107,7 +107,7 @@ PPU :: struct {
 	bg_shifter_attribute_hi:    u16,
 	// during sprite initialization (visible scanlines, cycles 1-64) OAM reads
 	// from $2004 should always return 0xff
-	oam_always_read_ff:         bool,
+	// oam_always_read_ff:         bool,
 	// sprite_evaluation_index: uint,
 	// n:                       uint,
 	// secondary_oam_index:     uint,
@@ -180,7 +180,7 @@ ppu_read_from_mmio_register :: proc(
 	}
 
 	ppu_oam_read_from_address :: proc(ppu: ^PPU, address: u8) -> u8 {
-		if ppu.oam_always_read_ff do return 0xff
+		// if ppu.oam_always_read_ff do return 0xff
 		return ppu.oam.raw_data[address]
 	}
 
@@ -409,7 +409,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 
 	// reset
 	ppu.is_rendering = false
-	ppu.oam_always_read_ff = false
+	// ppu.oam_always_read_ff = false
 
 	// skip the first idle tick on the first visible scanline (0,0) on odd frames
 	if ppu.scanline == 0 && ppu.cycle == 0 {
@@ -476,8 +476,8 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 
 				ppu.bg_next_tile_attribute = ppu_read_from_address(console, address)
 
-				if ppu.v.coarse_y & 0x02 == 1 do ppu.bg_next_tile_attribute >>= 4
-				if ppu.v.coarse_x & 0x02 == 1 do ppu.bg_next_tile_attribute >>= 2
+				if ppu.v.coarse_y & 0b10 > 0 do ppu.bg_next_tile_attribute >>= 4
+				if ppu.v.coarse_x & 0b10 > 0 do ppu.bg_next_tile_attribute >>= 2
 				ppu.bg_next_tile_attribute &= 0x03
 			case 4:
 				address :=
@@ -503,7 +503,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		if ppu.cycle == 256 do fine_y_increment_with_overflow(ppu)
 
 		if ppu.cycle == 257 {
-			// shifters_load_latched_data(ppu) // @todo should include???
+			shifters_load_latched_data(ppu) // should include??? Gemini says yes
 			transfer_horizontal(ppu)
 		}
 
@@ -739,7 +739,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 	transfer_horizontal :: proc(ppu: ^PPU) {
 		if ppu.mask.enable_background_rendering || ppu.mask.enable_sprite_rendering {
 			ppu.v.coarse_x = ppu.t.coarse_x
-			ppu.v.nametable_x = ppu.v.nametable_x
+			ppu.v.nametable_x = ppu.t.nametable_x
 		}
 	}
 

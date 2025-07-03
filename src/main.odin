@@ -75,7 +75,7 @@ main :: proc() {
 	}
 
 	// === INIT CONSOLE ===
-	rom_file_path := #directory + "../../roms/Donkey Kong (USA) (GameCube Edition).nes"
+	rom_file_path := #directory + "../../roms/Super Mario Bros. (World).nes"
 	rom, err := os.read_entire_file_or_err(rom_file_path)
 	if err != nil {
 		log.errorf("ERROR: could not open file '%s', %v", rom_file_path, err)
@@ -255,7 +255,7 @@ main :: proc() {
 		}
 
 
-		// rl.SetTargetFPS(60)
+		rl.SetTargetFPS(60)
 
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.BLACK)
@@ -308,7 +308,7 @@ render_debug_ui :: proc() {
 	str_buf := make([]u8, 1024)
 	defer delete(str_buf)
 
-	imgui.ShowDemoWindow(nil)
+	// imgui.ShowDemoWindow(nil)
 
 	if imgui.BeginMainMenuBar() {
 		imgui.Checkbox("Pattern Tables", &show_pattern_tables)
