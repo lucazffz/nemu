@@ -373,14 +373,6 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 				// second plane
 				address = u16(table_index * 0x1000 + byte_offset + row + 8)
 				tile_msb = ppu_read_from_address(console, address)
-				// ; err != nil {
-				// 	return errorf(
-				// 		.Pattern_Table_Read_Error,
-				// 		"could not read pattern table %d byte from $%04X",
-				// 		table_index,
-				// 		address,
-				// 	)
-				// }
 
 				for col in 0 ..< 8 {
 					pixel_palette_offset := ((tile_lsb & 0x01) << 1) | (tile_msb & 0x01)
@@ -404,7 +396,8 @@ ppu_get_color_from_palette :: proc(console: ^Console, palette_index, offset: uin
 	address := u16(0x3f00 + (palette_index << 2) + offset)
 	color_index := ppu_read_from_address(console, address)
 	c := (ppu_palette_2C02[color_index & 0x3f])
-	return transmute(Color)c
+	return c
+
 }
 
 @(require_results)
@@ -523,120 +516,123 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		// 	) or_return
 		// }
 
+	}
+
+	// --- Sprite rendering shit ---
+
+	if ppu.scanline >= -1 && ppu.scanline < 340 {
 		// @Note Sprite rendering does not follow the NES hardware timing.
 		// Everything is calculated during the first non-visible cycle of each scanline.
 		// This may cause compatability issues with certain games.
-		sprite_evaluation: {
-			if ppu.cycle == 257 && ppu.scanline >= 0 {
-				// Sprite initialization
-				slice.fill(ppu.secondary_oam.raw_data[:], 0xff)
-				ppu.sprite_count = 0
-				ppu.sprite_zero_hit_possible = false
 
-				oam_entry_num := 0
-				// iterate one extra sprite count to be able to determine
-				// value for sprite overflow flag
-				for oam_entry_num < 64 && ppu.sprite_count < 9 {
-					diff := int(ppu.scanline) - int(ppu.oam.sprites[oam_entry_num].y_pos)
+		sprite_evaluation: if ppu.cycle == 257 && ppu.scanline >= 0 {
+			// Sprite initialization
+			slice.fill(ppu.secondary_oam.raw_data[:], 0xff)
+			ppu.sprite_count = 0
+			ppu.sprite_zero_hit_possible = false
 
-					// sprite is visible on next scanline
-					if diff >= 0 && diff < (ppu.ctrl.sprite_size == 1 ? 16 : 8) {
-						if ppu.sprite_count < 8 {
-							if oam_entry_num == 0 {
-								ppu.sprite_zero_hit_possible = true
-							}
+			oam_entry_num := 0
+			// iterate one extra sprite count to be able to determine
+			// value for sprite overflow flag
+			for oam_entry_num < 64 && ppu.sprite_count < 9 {
+				diff := int(ppu.scanline) - int(ppu.oam.sprites[oam_entry_num].y_pos)
 
-							// copy sprite from OAM to secondary OAM
-							ppu.secondary_oam.sprites[ppu.sprite_count] =
-								ppu.oam.sprites[oam_entry_num]
-							ppu.sprite_count += 1
+				// sprite is visible on next scanline
+				if diff >= 0 && diff < (ppu.ctrl.sprite_size == 1 ? 16 : 8) {
+					if ppu.sprite_count < 8 {
+						if oam_entry_num == 0 {
+							ppu.sprite_zero_hit_possible = true
 						}
-					}
 
-					oam_entry_num += 1
+						// copy sprite from OAM to secondary OAM
+						ppu.secondary_oam.sprites[ppu.sprite_count] =
+							ppu.oam.sprites[oam_entry_num]
+						ppu.sprite_count += 1
+					}
 				}
 
-				ppu.status.sprite_overflow = ppu.sprite_count > 8
+				oam_entry_num += 1
 			}
 
+			ppu.status.sprite_overflow = ppu.sprite_count > 8
 		}
 
-		sprite_data_fetch: {
-			// last cycle of scanline
-			if ppu.cycle == 340 {
-				for sprite, i in ppu.secondary_oam.sprites[:ppu.sprite_count] {
-					sprite_pattern_bits_lo, sprite_pattern_bits_hi: u8
-					sprite_pattern_addr_lo, sprite_pattern_addr_hi: u16
 
-					if ppu.ctrl.sprite_size == 0 {
-						// 8x8 sprite mode
-						if !sprite.attributes.flip_vertically {
+		// last cycle of scanline
+		sprite_data_fetch: if ppu.cycle == 340 {
+			for sprite, i in ppu.secondary_oam.sprites[:ppu.sprite_count] {
+				sprite_pattern_bits_lo, sprite_pattern_bits_hi: u8
+				sprite_pattern_addr_lo, sprite_pattern_addr_hi: u16
+
+				if ppu.ctrl.sprite_size == 0 {
+					// 8x8 sprite mode
+					if !sprite.attributes.flip_vertically {
+						sprite_pattern_addr_lo =
+							(u16(ppu.ctrl.sprite_pattern_table_address) << 12) |
+							(u16(sprite.tile_index) << 4) |
+							u16(ppu.scanline - int(sprite.y_pos))
+					} else {
+						sprite_pattern_addr_lo =
+							(u16(ppu.ctrl.sprite_pattern_table_address) << 12) |
+							(u16(sprite.tile_index) << 4) |
+							u16(7 - (ppu.scanline - int(sprite.y_pos)))
+					}
+				} else {
+					// 8x16 sprite mode
+					if !sprite.attributes.flip_vertically {
+						// top half of tile
+						if ppu.scanline - int(sprite.y_pos) < 8 {
 							sprite_pattern_addr_lo =
-								(u16(ppu.ctrl.sprite_pattern_table_address) << 12) |
-								(u16(sprite.tile_index) << 4) |
-								u16(ppu.scanline - int(sprite.y_pos))
+								(u16(sprite.tile_index & 0x01) << 12) |
+								(u16(sprite.tile_index & 0xfe) << 4) |
+								(u16(ppu.scanline - int(sprite.y_pos)) & 0x07)
 						} else {
+							// bottom half of tile
 							sprite_pattern_addr_lo =
-								(u16(ppu.ctrl.sprite_pattern_table_address) << 12) |
-								(u16(sprite.tile_index) << 4) |
-								u16(7 - (ppu.scanline - int(sprite.y_pos)))
+								(u16(sprite.tile_index & 0x01) << 12) |
+								((u16(sprite.tile_index & 0xfe) + 1) << 4) |
+								(u16(ppu.scanline - int(sprite.y_pos)) & 0x07)
 						}
 					} else {
-						// 8x16 sprite mode
-						if !sprite.attributes.flip_vertically {
-							// top half of tile
-							if ppu.scanline - int(sprite.y_pos) < 8 {
-								sprite_pattern_addr_lo =
-									(u16(sprite.tile_index & 0x01) << 12) |
-									(u16(sprite.tile_index & 0xfe) << 4) |
-									(u16(ppu.scanline - int(sprite.y_pos)) & 0x07)
-							} else {
-								// bottom half of tile
-								sprite_pattern_addr_lo =
-									(u16(sprite.tile_index & 0x01) << 12) |
-									((u16(sprite.tile_index & 0xfe) + 1) << 4) |
-									(u16(ppu.scanline - int(sprite.y_pos)) & 0x07)
-							}
+						// top half of tile
+						if ppu.scanline - int(sprite.y_pos) < 8 {
+							sprite_pattern_addr_lo =
+								(u16(sprite.tile_index & 0x01) << 12) |
+								(u16(sprite.tile_index & 0xfe) << 4) |
+								(u16(7 - (ppu.scanline - int(sprite.y_pos))) & 0x07)
 						} else {
-							// top half of tile
-							if ppu.scanline - int(sprite.y_pos) < 8 {
-								sprite_pattern_addr_lo =
-									(u16(sprite.tile_index & 0x01) << 12) |
-									(u16(sprite.tile_index & 0xfe) << 4) |
-									(u16(7 - (ppu.scanline - int(sprite.y_pos))) & 0x07)
-							} else {
-								// bottom half of tile
-								sprite_pattern_addr_lo =
-									(u16(sprite.tile_index & 0x01) << 12) |
-									((u16(sprite.tile_index & 0xfe) + 1) << 4) |
-									(u16(7 - ppu.scanline - int(sprite.y_pos) & 0x07))
-							}
+							// bottom half of tile
+							sprite_pattern_addr_lo =
+								(u16(sprite.tile_index & 0x01) << 12) |
+								((u16(sprite.tile_index & 0xfe) + 1) << 4) |
+								(u16(7 - ppu.scanline - int(sprite.y_pos) & 0x07))
 						}
 					}
-
-					sprite_pattern_addr_hi = sprite_pattern_addr_lo + 8
-					sprite_pattern_bits_lo = ppu_read_from_address(console, sprite_pattern_addr_lo)
-					sprite_pattern_bits_hi = ppu_read_from_address(console, sprite_pattern_addr_hi)
-
-					if sprite.attributes.flip_horizontally {
-						sprite_pattern_bits_lo = flip_byte(sprite_pattern_bits_lo)
-						sprite_pattern_bits_hi = flip_byte(sprite_pattern_bits_hi)
-
-						flip_byte :: proc(b: u8) -> u8 {
-							b := b
-							b = (b & 0xf0) >> 4 | (b & 0x0f) << 4
-							b = (b & 0xcc) >> 2 | (b & 0x33) << 2
-							b = (b & 0xaa) >> 1 | (b & 0x55) << 1
-							return b
-						}
-					}
-
-					ppu.sprite_shifter_pattern_lo[i] = sprite_pattern_bits_lo
-					ppu.sprite_shifter_pattern_hi[i] = sprite_pattern_bits_hi
 				}
+
+				sprite_pattern_addr_hi = sprite_pattern_addr_lo + 8
+				sprite_pattern_bits_lo = ppu_read_from_address(console, sprite_pattern_addr_lo)
+				sprite_pattern_bits_hi = ppu_read_from_address(console, sprite_pattern_addr_hi)
+
+				if sprite.attributes.flip_horizontally {
+					sprite_pattern_bits_lo = flip_byte(sprite_pattern_bits_lo)
+					sprite_pattern_bits_hi = flip_byte(sprite_pattern_bits_hi)
+
+					flip_byte :: proc(b: u8) -> u8 {
+						b := b
+						b = (b & 0xf0) >> 4 | (b & 0x0f) << 4
+						b = (b & 0xcc) >> 2 | (b & 0x33) << 2
+						b = (b & 0xaa) >> 1 | (b & 0x55) << 1
+						return b
+					}
+				}
+
+				ppu.sprite_shifter_pattern_lo[i] = sprite_pattern_bits_lo
+				ppu.sprite_shifter_pattern_hi[i] = sprite_pattern_bits_hi
 			}
 		}
 	}
+
 
 	// do nothing during scanline 240
 
@@ -651,45 +647,39 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 	// Well 241 is also included in vblank but yeah
 
 	fg_pixel, fg_palette, fg_priority: uint
+	sprite_rendering: if ppu.mask.enable_sprite_rendering {
+		ppu.sprite_zero_being_rendered = false
 
-	sprite_rendering: {
-		if ppu.mask.enable_sprite_rendering {
-			ppu.sprite_zero_being_rendered = false
+		for sprite, i in ppu.secondary_oam.sprites[:ppu.sprite_count] {
+			if sprite.x_pos == 0 {
+				fg_pixel_lo := uint(ppu.sprite_shifter_pattern_lo[i] & 0x80 > 0)
+				fg_pixel_hi := uint(ppu.sprite_shifter_pattern_hi[i] & 0x80 > 0)
 
-			for sprite, i in ppu.secondary_oam.sprites[:ppu.sprite_count] {
-				if sprite.x_pos == 0 {
-					fg_pixel_lo := uint(ppu.sprite_shifter_pattern_lo[i] & 0x80 > 0)
-					fg_pixel_hi := uint(ppu.sprite_shifter_pattern_hi[i] & 0x80 > 0)
+				fg_pixel = uint((fg_pixel_hi << 1) | fg_pixel_lo)
+				fg_palette = uint(sprite.attributes.palette_index) + 4
+				fg_priority = uint(sprite.attributes.priority)
 
-					fg_pixel = uint((fg_pixel_lo << 1) | fg_pixel_hi)
-					fg_palette = uint(sprite.attributes.palette_index)
-					fg_priority = uint(sprite.attributes.priority)
-
-					if fg_pixel != 0 {
-						if i == 0 do ppu.sprite_zero_being_rendered = true
-						break sprite_rendering
-					}
+				if fg_pixel != 0 {
+					if i == 0 do ppu.sprite_zero_being_rendered = true
+					break
 				}
-
 			}
-		}
 
+		}
 	}
 
+
 	bg_palette, bg_pixel: uint
+	background_rendering: if ppu.mask.enable_background_rendering {
+		bit_mux: u16 = 0x8000 >> ppu.x
 
-	background_rendering: {
-		if ppu.mask.enable_background_rendering {
-			bit_mux: u16 = 0x8000 >> ppu.x
+		p0_pixel := uint((ppu.bg_shifter_pattern_lo & bit_mux) > 0)
+		p1_pixel := uint((ppu.bg_shifter_pattern_hi & bit_mux) > 0)
+		bg_pixel = (p1_pixel << 1) | p0_pixel
 
-			p0_pixel := uint((ppu.bg_shifter_pattern_lo & bit_mux) > 0)
-			p1_pixel := uint((ppu.bg_shifter_pattern_hi & bit_mux) > 0)
-			bg_pixel = (p1_pixel << 1) | p0_pixel
-
-			bg_pal0 := uint((ppu.bg_shifter_attribute_lo & bit_mux) > 0)
-			bg_pal1 := uint((ppu.bg_shifter_attribute_hi & bit_mux) > 0)
-			bg_palette = (bg_pal1 << 1) | bg_pal0
-		}
+		bg_pal0 := uint((ppu.bg_shifter_attribute_lo & bit_mux) > 0)
+		bg_pal1 := uint((ppu.bg_shifter_attribute_hi & bit_mux) > 0)
+		bg_palette = (bg_pal1 << 1) | bg_pal0
 	}
 
 	pixel, palette: uint
@@ -729,7 +719,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 
 	if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
 		c := ppu_get_color_from_palette(console, palette, pixel)
-		c.a = 0xff
+		// c.a = 0xff
 		ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
 	}
 
@@ -817,7 +807,7 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 			ppu.bg_shifter_attribute_hi <<= 1
 		}
 
-		// only shift the sprite is visible
+		// only shift the sprite if visible
 		if ppu.mask.enable_sprite_rendering && ppu.cycle >= 1 && ppu.cycle < 258 {
 			for &sprite, i in ppu.secondary_oam.sprites[:ppu.sprite_count] {
 				if sprite.x_pos > 0 {

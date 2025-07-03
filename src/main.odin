@@ -226,8 +226,7 @@ main :: proc() {
 					// if v == 0 do continue
 					// @note watch out for endianess when converting color from u32 to [4]u8
 					c := emulator.ppu_get_color_from_palette(console, 0, v)
-					col := rl.Color{c.b, c.g, c.r, 0xff}
-					pattern_table_0_buf[i] = col
+					pattern_table_0_buf[i] = auto_cast c
 				}
 				rl.UpdateTexture(pattern_table_0_texture, &pattern_table_0_buf)
 			}
@@ -354,11 +353,14 @@ render_debug_ui :: proc() {
 		imgui.Begin("OAM", nil)
 		for sprite in console.ppu.oam.sprites {
 			imgui.Text(
-				"(%d, %d), ID: %d, AT: %d",
+				"(%d, %d), ID: %d, PAL: %d, PRI: %d, HFLIP: %d, VFLIP: %d",
 				sprite.x_pos,
 				sprite.y_pos,
 				sprite.tile_index,
-				sprite.attributes,
+				sprite.attributes.palette_index,
+				sprite.attributes.priority,
+				sprite.attributes.flip_horizontally,
+				sprite.attributes.flip_vertically,
 			)
 		}
 
@@ -471,18 +473,7 @@ render_debug_ui :: proc() {
 
 	get_palette_color :: proc(palette_index, offset: int) -> u32 {
 		c := emulator.ppu_get_color_from_palette(console, uint(palette_index), uint(offset))
-		// c.a = 0xff
-		// return transmute(u32)c
-		color := transmute(u32)c
-		return reverse_bytes((color << 8) | 0xff)
-
-		reverse_bytes :: proc(n: u32) -> u32 {
-			result: u32 = 0
-			result |= (n & 0x000000FF) << 24
-			result |= (n & 0x0000FF00) << 8
-			result |= (n & 0x00FF0000) >> 8
-			result |= (n & 0xFF000000) >> 24
-			return result
-		}}
+		return transmute(u32)c
+	}
 }
 
