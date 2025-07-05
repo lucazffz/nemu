@@ -57,7 +57,7 @@ console_make :: proc(
 	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
 	// console.ppu.oam.raw_data = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
 	console.ppu.vram = make_slice([]u8, ppu_vram_size, allocator, loc) or_return
-	console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
+	// console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
 	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
 
 	return
@@ -134,13 +134,14 @@ console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
 
 console_execute_clk_cycle :: proc(
 	console: ^Console,
+	pixel_buffer: Maybe([]Color),
 ) -> (
 	frame_complete: bool,
 	cpu_complete: bool,
 	err: Maybe(Error),
 ) {
 
-	frame_complete = ppu_execute_clk_cycle(console)
+	frame_complete = ppu_execute_clk_cycle(console, pixel_buffer)
 
 	if console.cycle_count % 3 == 0 {
 		if console.cpu.dma_transfer {
@@ -179,7 +180,7 @@ console_reset :: proc(console: ^Console) -> Maybe(Error) {
 	console.cpu.interrupt = .Reset
 	complete: bool
 	for !complete {
-		_, complete = console_execute_clk_cycle(console) or_return
+		_, complete = console_execute_clk_cycle(console, nil) or_return
 
 	}
 

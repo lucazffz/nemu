@@ -95,7 +95,7 @@ PPU :: struct {
 	frame_count:                u64,
 	cycle:                      int,
 	scanline:                   int,
-	pixel_buffer:               []Color,
+	// pixel_buffer:               []Color,
 	cycle_count:                int,
 	bg_next_tile_id:            u8,
 	bg_next_tile_attribute:     u8,
@@ -401,7 +401,12 @@ ppu_get_color_from_palette :: proc(console: ^Console, palette_index, offset: uin
 }
 
 @(require_results)
-ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
+ppu_execute_clk_cycle :: proc(
+	console: ^Console,
+	pixel_buffer: Maybe([]Color),
+) -> (
+	frame_complete: bool,
+) {
 	// the ppu will continue execution even when encountering read errors and
 	// simply cascade them to the caller as warnings
 
@@ -717,10 +722,11 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		}
 	}
 
-	if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
-		c := ppu_get_color_from_palette(console, palette, pixel)
-		// c.a = 0xff
-		ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
+	if buffer, ok := pixel_buffer.?; ok {
+		if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
+			c := ppu_get_color_from_palette(console, palette, pixel)
+			buffer[ppu.scanline * 256 + ppu.cycle] = c
+		}
 	}
 
 	ppu.cycle += 1
