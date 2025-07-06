@@ -2,19 +2,17 @@ package nemu
 
 import "base:builtin"
 import "base:runtime"
-import "core:encoding/endian"
 import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:mem"
 import "core:os"
-import "core:slice"
-import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
 import emu "emulator"
+import "utils"
 import rlimgui "vendor/imgui_impl_raylib"
 import imgui "vendor/odin-imgui"
 import rl "vendor:raylib"
@@ -35,11 +33,13 @@ GAME_HEIGHT :: 240
 // All global program state is organized within this variable
 @(private)
 g: struct {
-	console:       ^emu.Console,
-	mapper:        emu.Mapper,
-	rom_file_path: string,
+	console:        ^emu.Console,
+	mapper:         emu.Mapper,
+	rom_file_path:  string,
+	multi_logger:   runtime.Logger,
+	console_logger: runtime.Logger,
 	// Global state related to emulator
-	emulator:      struct {
+	emulator:       struct {
 		// frame_cond:        sync.Cond,
 		frame_mutex:       sync.Mutex,
 		frame_time:        time.Duration,
@@ -49,15 +49,18 @@ g: struct {
 		run:               bool,
 	},
 	// Global state related to game view
-	view:          struct {
-		render_cond:       sync.Cond,
-		render_mutex:      sync.Mutex,
-		game_view_texture: rl.Texture2D,
-		front_buffer:      []emu.Color,
-		back_buffer:       []emu.Color,
+	view:           struct {
+		target_refresh_rate: i32,
+		// render_cond:         sync.Cond,
+		render_mutex:        sync.Mutex,
+		game_view_texture:   rl.Texture2D,
+		front_buffer:        []emu.Color,
+		back_buffer:         []emu.Color,
 	},
 	// Global state related to debug UI
-	debug_ui:      struct {
+	debug_ui:       struct {
+		logger:                 runtime.Logger,
+		text_buf:               imgui.TextBuffer,
 		show:                   bool,
 		dockspace_id:           imgui.ID,
 		patter_table_0_texture: rl.RenderTexture2D,
@@ -66,231 +69,79 @@ g: struct {
 }
 
 main :: proc() {
-	logger := log.create_console_logger(.Info)
-	defer log.destroy_console_logger(logger)
-	context.logger = logger
+	console_logger := log.create_console_logger()
+	context.logger = console_logger
 
-	// setup tracking allocator in debug mode and print unfreed allocations
-	// on termination
 	when ODIN_DEBUG {
-		context.logger.lowest_level = .Debug
-
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)
 		context.allocator = mem.tracking_allocator(&track)
-
 		defer {
-			if len(track.allocation_map) > 0 {
-				// use temp allocator as to not interfere with the tracking allocator
-				if builder, err := strings.builder_make_none(context.temp_allocator); err == nil {
-					fmt.sbprintfln(
-						&builder,
-						"%v allocations not freed during termination:",
-						len(track.allocation_map),
-					)
-
-					for _, entry in track.allocation_map {
-						fmt.sbprintfln(&builder, " - %v bytes @ %v", entry.size, entry.location)
-					}
-
-					log.warn(strings.to_string(builder))
-				} else {
-					log.error("could not print unfreed allocations", err)
-				}
-
-				mem.tracking_allocator_destroy(&track)
-			}
+			context.logger = console_logger
+			log_tracking_allocator_results(&track)
 		}
 	}
 
-	// === INIT CONSOLE ===
+	if len(os.args) != 2 {
+		log.errorf(
+			"ERROR: Expected 1 argument of format 'nemu <rom file path>', got %d",
+			len(os.args) - 1,
+		)
+		os.exit(1)
+	}
 
-	// emulator.console_set_program_counter(console, 0xc000)
-
-	// emulator.ppu_write_to_address(console, 0xc, 0x3f00)
-	// emulator.ppu_write_to_address(console, 0x2, 0x3f00 + 1)
-	// emulator.ppu_write_to_address(console, 0x5, 0x3f00 + 2)
-	// emulator.ppu_write_to_address(console, 0x6, 0x3f00 + 3)
-
-	// palette_index_buffer_0: [128 * 128]uint
-	// palette_index_buffer_1: [128 * 128]uint
-
-	// emulator.ppu_pattern_table_palette_offset_to_buffer(console, palette_index_buffer_0[:], 0)
-	// emulator.ppu_pattern_table_palette_offset_to_buffer(console, palette_index_buffer_1[:], 1)
-
-	// pattern_table_0_buf: [128 * 128]rl.Color
-	// pattern_table_1_buf: [128 * 128]rl.Color
-
-
-	// for v, i in palette_index_buffer_1 {
-	// 	if v == 0 do continue
-	// 	pattern_table_1_buf[i] = rl.GetColor(0xffffffff)
-	// }
-
-
-	// pattern_table_0_img: rl.Image = {
-	// 	data    = &pattern_table_0_buf,
-	// 	width   = 128,
-	// 	height  = 128,
-	// 	mipmaps = 1,
-	// 	format  = rl.PixelFormat.UNCOMPRESSED_R8G8B8A8,
-	// }
-
-	// pattern_table_1_img: rl.Image = {
-	// 	data    = &pattern_table_1_buf,
-	// 	width   = 128,
-	// 	height  = 128,
-	// 	mipmaps = 1,
-	// 	format  = rl.PixelFormat.UNCOMPRESSED_R8G8B8A8,
-	// }
-
-
-	// game_view_img := rl.Image {
-	// 	data    = raw_data(console.ppu.pixel_buffer),
-	// 	width   = GAME_WIDTH,
-	// 	height  = GAME_HEIGHT,
-	// 	mipmaps = 1,
-	// 	format  = rl.PixelFormat.UNCOMPRESSED_R8G8B8A8,
-	// }
-
-
-	// === RENDER ===
-	// rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE, rl.ConfigFlag.WINDOW_ALWAYS_RUN})
-	// rl.InitWindow(GAME_WIDTH * 2, GAME_HEIGHT * 2, "Raylib + ImGui in Odin");defer rl.CloseWindow()
-
-	// // Setup ImGui context
-	// imgui.CreateContext(nil);defer imgui.DestroyContext(nil)
-
-	// // Init ImGui for Raylib
-	// rlimgui.init();defer rlimgui.shutdown()
-
+	g.rom_file_path = os.args[1]
 
 	initialize()
-	defer shutdown()
 
-	thread.run(emulator_loop, nil, thread.Thread_Priority.High)
+	// cannot setup imgui logger before initialization
+	g.debug_ui.logger = utils.create_imgui_logger(&g.debug_ui.text_buf, opt = {.Time})
+	g.multi_logger = log.create_multi_logger(console_logger, g.debug_ui.logger)
+	context.logger = g.multi_logger
 
+	th := thread.create_and_start(emulator_loop, nil, .High, true)
 	main_loop()
-	// pattern_table_0_texture = rl.LoadTextureFromImage(pattern_table_0_img)
-	// pattern_table_1_texture = rl.LoadTextureFromImage(pattern_table_1_img)
-	// game_view_texture = rl.LoadTextureFromImage(game_view_img)
 
-
-	// when ODIN_DEBUG do show_debug_io = true
-
-	// last_err: emu.Error
-
-	// buf: [64]byte
-	// Main loop
-	// for !rl.WindowShouldClose() {
-	// 	if rl.IsKeyPressed(rl.KeyboardKey.SPACE) do should_run = !should_run
-	// 	if rl.IsKeyPressed(rl.KeyboardKey.F3) do show_debug_io = !show_debug_io
-
-
-	// 	frame_complete, cpu_complete: bool;err: Maybe(emulator.Error)
-	// 	if (rl.IsKeyPressed(rl.KeyboardKey.S) || should_run) &&
-	// 	   (console.cpu.instruction_count < brk_point_instruction || brk_point_instruction == 0) {
-	// 		using emulator
-	// 		for (should_run || !cpu_complete) && !frame_complete {
-
-	// 			if frame_complete, cpu_complete, err = console_execute_clk_cycle(console);
-	// 			   err != nil {
-	// 				if err != last_err {
-	// 					err := err.?
-	// 					error_log(err, log.Level.Warning)
-	// 					last_err = err
-	// 				}
-	// 			}
-	// 		}
-
-	// 		rl.UpdateTexture(game_view_texture, raw_data(console.ppu.pixel_buffer))
-
-	// 		if show_debug_io && frame_complete {
-	// 			for v, i in palette_index_buffer_0 {
-	// 				// if v == 0 do continue
-	// 				// @note watch out for endianess when converting color from u32 to [4]u8
-	// 				c := emulator.ppu_get_color_from_palette(console, 0, v)
-	// 				pattern_table_0_buf[i] = auto_cast c
-	// 			}
-	// 			rl.UpdateTexture(pattern_table_0_texture, &pattern_table_0_buf)
-	// 		}
-	// 	}
-
-	// 	screen_width := rl.GetScreenWidth()
-	// 	screen_height := rl.GetScreenHeight()
-	// 	game_view_rectangle: rl.Rectangle
-
-	// 	if screen_height < screen_width {
-	// 		game_view_size := screen_height
-	// 		game_view_rectangle = {
-	// 			f32((screen_width - game_view_size) / 2),
-	// 			0,
-	// 			f32(game_view_size),
-	// 			f32(game_view_size),
-	// 		}
-	// 	} else {
-	// 		game_view_size := screen_width
-	// 		game_view_rectangle = {
-	// 			0,
-	// 			f32((screen_height - game_view_size) / 2),
-	// 			f32(game_view_size),
-	// 			f32(game_view_size),
-	// 		}
-	// 	}
-
-
-	// 	rl.SetTargetFPS(60)
-
-	// 	rl.BeginDrawing()
-	// 	rl.ClearBackground(rl.BLACK)
-
-	// 	// Raylib rendering
-	// 	rl.DrawTexturePro(
-	// 		game_view_texture,
-	// 		{0, 0, GAME_WIDTH, GAME_HEIGHT},
-	// 		game_view_rectangle,
-	// 		{},
-	// 		0,
-	// 		rl.WHITE,
-	// 	)
-
-
-	// 	if show_debug_io {
-	// 		rl.DrawFPS(15, 30)
-	// 		// ImGui begin (must be called each frame BEFORE using ImGui)
-	// 		rlimgui.begin()
-
-
-	// 		if show_debug_io {
-	// 			render_debug_ui()
-	// 		}
-
-
-	// 		rlimgui.end()
-	// 	}
-
-
-	// 	// Drawing on top of ImGui (call after 'rlimgui.end()' to do that, as showed here)
-	// 	// rl.DrawText("Drawing on top of ImGui window", 170, 370, 30, rl.BLUE)
-	// 	rl.EndDrawing()
-
-	// 	free_all(context.temp_allocator)
-	// }
+	thread.terminate(th, 0)
+	shutdown()
 }
 
+log_tracking_allocator_results :: proc(track: ^mem.Tracking_Allocator) {
+	if len(track.allocation_map) > 0 {
+		// use temp allocator as to not interfere with the tracking allocator
+		if builder, err := strings.builder_make_none(context.temp_allocator); err == nil {
+			fmt.sbprintfln(
+				&builder,
+				"%v allocations not freed during termination:",
+				len(track.allocation_map),
+			)
+
+			for _, entry in track.allocation_map {
+				fmt.sbprintfln(&builder, " - %v bytes @ %v", entry.size, entry.location)
+			}
+
+			log.warn(strings.to_string(builder))
+		} else {
+			log.error("could not print unfreed allocations", err)
+		}
+
+		mem.tracking_allocator_destroy(track)
+	}
+}
 
 initialize :: proc() {
+
 	// Read ROM from iNES file
-	rom_file_path := #directory + "../../roms/Super Mario Bros. (World).nes"
-	rom, err := os.read_entire_file_or_err(rom_file_path)
+	// rom_file_path := #directory + "../../roms/Super Mario Bros. (World).nes"
+	rom, err := os.read_entire_file_or_err(g.rom_file_path)
 	if err != nil {
-		log.errorf("ERROR: could not open file '%s', %v", rom_file_path, err)
+		log.errorf("ERROR: could not open file '%s', %v", g.rom_file_path, err)
 		os.exit(1)
 	}
 	defer delete(rom)
 
 	if ok := emu.ines_is_nes_file_format(rom); !ok {
-		log.errorf("ERROR: file '%s' is not in iNES format", rom_file_path)
+		log.errorf("ERROR: file '%s' is not in iNES format", g.rom_file_path)
 		os.exit(1)
 	}
 
@@ -314,15 +165,11 @@ initialize :: proc() {
 	g.view.front_buffer = make([]emu.Color, GAME_WIDTH * GAME_HEIGHT)
 	g.view.back_buffer = make([]emu.Color, GAME_WIDTH * GAME_HEIGHT)
 
-	when ODIN_DEBUG {
-		g.debug_ui.show = true
-	} else {
-		g.emulator.run = true
-	}
 
 	// Intialize Raylib
 	rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE, rl.ConfigFlag.WINDOW_ALWAYS_RUN})
 	rl.InitWindow(GAME_WIDTH * 2, GAME_HEIGHT * 2, "Nemu")
+
 
 	// Initialize debug UI
 	ctx := imgui.CreateContext()
@@ -331,10 +178,10 @@ initialize :: proc() {
 
 	rlimgui.init()
 
-
 	rlimgui.begin()
 	init_debug_ui()
 	rlimgui.end()
+
 
 	game_view_img := rl.Image {
 		data    = raw_data(g.view.front_buffer),
@@ -345,6 +192,11 @@ initialize :: proc() {
 	}
 	g.view.game_view_texture = rl.LoadTextureFromImage(game_view_img)
 
+	// when ODIN_DEBUG {
+	// 	g.debug_ui.show = true
+	// } else {
+	// }
+	g.emulator.run = true
 
 }
 
@@ -361,11 +213,19 @@ atomic_buffer_swap :: proc(buffer_1: ^[]$E, buffer_2: ^[]E, mutex: ^sync.Mutex) 
 
 
 shutdown :: proc() {
-	emu.console_delete(g.console)
-	emu.mapper_delete(g.mapper)
+	utils.destroy_imgui_logger(g.debug_ui.logger)
+	log.destroy_multi_logger(g.multi_logger)
+
 	rlimgui.shutdown()
 	imgui.DestroyContext()
+
 	rl.CloseWindow()
+
+	emu.console_delete(g.console)
+	emu.mapper_delete(g.mapper)
+
+	delete(g.view.front_buffer)
+	delete(g.view.back_buffer)
 }
 
 emulator_loop :: proc() {
@@ -398,20 +258,24 @@ emulator_loop :: proc() {
 }
 
 main_loop :: proc() {
-	monitor_num := rl.GetMonitorCount()
+	monitor_num := rl.GetCurrentMonitor()
 	refresh_rate := rl.GetMonitorRefreshRate(monitor_num)
-	if refresh_rate == 0 do refresh_rate = 60
+	if refresh_rate == 0 {
+		log.warn("WARNING: Could not get monitor refresh rate, will default to 60 Hz")
+		g.view.target_refresh_rate = 60
+	} else {
+		g.view.target_refresh_rate = refresh_rate
+		log.infof("INFO: Refresh rate set to %d Hz", refresh_rate)
+	}
+
+	rl.SetTargetFPS(refresh_rate)
 
 	for !rl.WindowShouldClose() {
-		rl.SetTargetFPS(refresh_rate)
-
 		if rl.IsKeyPressed(.F3) do g.debug_ui.show = !g.debug_ui.show
-
 
 		critical_section: if sync.guard(&g.view.render_mutex) {
 			rl.UpdateTexture(g.view.game_view_texture, raw_data(g.view.front_buffer))
 		}
-
 
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.BLACK)
@@ -530,25 +394,189 @@ init_debug_ui :: proc() {
 
 render_debug_ui :: proc() {
 	@(static) show_game_view := true
+	@(static) show_log := true
+	@(static) show_pattern_tables: bool = false
+	@(static) show_console_state: bool = true
+	@(static) show_palettes: bool = false
+	@(static) show_oam: bool = false
 
 	imgui.DockSpaceOverViewport(g.debug_ui.dockspace_id)
 
-	if show_game_view {
-		imgui.PushStyleVarImVec2(imgui.StyleVar.WindowPadding, {0, 0})
-		defer imgui.PopStyleVar()
+	if imgui.BeginMainMenuBar() {
+		if imgui.BeginMenu("Home") {
+			imgui.EndMenu()
+		}
+		if imgui.BeginMenu("View") {
+			imgui.Checkbox("Game View", &show_game_view)
+			imgui.Checkbox("Log", &show_log)
+			imgui.Checkbox("Pattern Tables", &show_pattern_tables)
+			imgui.Checkbox("Console State", &show_console_state)
+			imgui.Checkbox("Palettes", &show_palettes)
+			imgui.Checkbox("PPU OAM", &show_oam)
 
-		imgui.Begin("Game View", &show_game_view)
-		defer imgui.End()
+			imgui.EndMenu()
+		}
 
-		w := imgui.GetCurrentWindow()
-		size: imgui.Vec2 = {w.Size.x, w.Size.y - w.TitleBarHeight}
-		flags := imgui.WindowFlags{.NoScrollbar}
-		rlimgui.image_size(&g.view.game_view_texture, size)
+		if imgui.BeginMenu("Control") {
+			imgui.EndMenu()
+		}
+
+		imgui.EndMainMenuBar()
 	}
 
-	imgui.Begin("test")
+	if show_game_view {
+		flags := imgui.WindowFlags{.NoScrollbar, .MenuBar}
+		imgui.PushStyleVarImVec2(imgui.StyleVar.WindowPadding, {})
+		if imgui.Begin("Game View", &show_game_view, flags) {
+			imgui.PopStyleVar()
 
-	imgui.End()
+			@(static) scaling_mode: enum {
+				Keep_Aspect_Ratio,
+				Fill_Space,
+			} = .Keep_Aspect_Ratio
+
+			if imgui.BeginMenuBar() {
+				if imgui.BeginMenu("Scaling Options") {
+					if imgui.RadioButton("Keep Aspect Ratio", scaling_mode == .Keep_Aspect_Ratio) {
+						scaling_mode = .Keep_Aspect_Ratio
+						log.infof("changed game window scaling mode to %v", scaling_mode)
+						imgui.CloseCurrentPopup()
+					}
+
+					if imgui.RadioButton("Fill Space", scaling_mode == .Fill_Space) {
+						scaling_mode = .Fill_Space
+						log.infof("changed game window scaling mode to %v", scaling_mode)
+						imgui.CloseCurrentPopup()
+					}
+
+					imgui.EndMenu()
+				}
+
+				imgui.EndMenuBar()
+			}
+
+			w := imgui.GetCurrentWindow()
+			top_padding := w.TitleBarHeight + w.MenuBarHeight
+			if scaling_mode == .Keep_Aspect_Ratio {
+				window_height := w.Size.y - top_padding
+				window_width := w.Size.x
+
+				if window_height < window_width {
+					game_view_size := window_height
+					x := (window_width - game_view_size) / 2
+					imgui.SetCursorPosX(x)
+					rlimgui.image_size(&g.view.game_view_texture, game_view_size)
+				} else {
+					game_view_size := window_width
+					y := ((window_height - game_view_size) / 2) + top_padding
+					imgui.SetCursorPosY(y)
+					rlimgui.image_size(&g.view.game_view_texture, game_view_size)
+				}
+			} else if scaling_mode == .Fill_Space {
+				game_view_size: imgui.Vec2 = {w.Size.x, w.Size.y - top_padding}
+				rlimgui.image_size(&g.view.game_view_texture, game_view_size)
+			}
+		}
+
+		imgui.End()
+	}
+
+	if show_log {
+		@(static) wrap_text := true
+		@(static) enable_auto_scroll := true
+
+		if imgui.Begin("Log", &show_log, {.MenuBar, .NoScrollbar}) {
+			if imgui.BeginMenuBar() {
+				if imgui.BeginMenu("Filter") {
+					imgui.EndMenu()
+				}
+
+				imgui.Checkbox("Wrap Text", &wrap_text)
+
+				if imgui.Button("Clear") {
+					imgui.TextBuffer_clear(&g.debug_ui.text_buf)
+					imgui.SetScrollHereY(1)
+				}
+
+				if imgui.Button("Scroll To Bottom") {
+					imgui.SetScrollHereY(1)
+					enable_auto_scroll = true
+				}
+
+				imgui.EndMenuBar()
+			}
+
+
+			str := imgui.TextBuffer_begin(&g.debug_ui.text_buf)
+
+			if wrap_text do imgui.TextWrapped("%s", str)
+			else do imgui.TextUnformatted(str)
+
+			// Handle auto scrolling, yes shit code. I dont even know how it works.
+			// but that comment was fkn formatted so its okay
+			// yes its 2 AM...
+			if imgui.GetScrollY() >= imgui.GetScrollMaxY() - imgui.GetStyle().ScrollbarSize {
+				enable_auto_scroll = true
+			}
+
+			if enable_auto_scroll &&
+			   (utils.imgui_logger_get_scroll_to_bottom(g.debug_ui.logger) ||
+					   imgui.GetScrollY() >=
+						   imgui.GetScrollMaxY() - imgui.GetStyle().ScrollbarSize) {
+				imgui.SetScrollHereY(1)
+				utils.imgui_logger_set_scroll_to_bottom(&g.debug_ui.logger, false)
+			}
+
+			if enable_auto_scroll &&
+			   imgui.GetScrollY() < imgui.GetScrollMaxY() - imgui.GetStyle().ScrollbarSize * 2 {
+				enable_auto_scroll = false
+			}
+
+			imgui.End()
+		}
+	}
+
+	if show_palettes {
+		imgui.Begin("Palettes", &show_palettes)
+		draw_list := imgui.GetWindowDrawList()
+		pos := imgui.GetWindowPos()
+		pos.y += 30
+		size: f32 = 20
+		for j in 0 ..< 8 {
+			for i in 0 ..< 4 {
+				imgui.DrawList_AddRectFilled(
+					draw_list,
+					{pos.x + f32(i) * size, (pos.y + f32(j) * size)},
+					{pos.x + (f32(i) + 1) * size, pos.y + (f32(j) + 1) * size},
+					get_palette_color(j, i),
+				)
+			}
+		}
+		imgui.End()
+	}
+
+	if show_oam {
+		imgui.Begin("OAM", &show_oam)
+		for sprite in g.console.ppu.oam.sprites {
+			imgui.Text(
+				"(%03d, %03d), ID: %03d, PAL: %d, PRI: %d, HFLIP: %d, VFLIP: %d",
+				sprite.x_pos,
+				sprite.y_pos,
+				sprite.tile_index,
+				sprite.attributes.palette_index,
+				sprite.attributes.priority,
+				sprite.attributes.flip_horizontally,
+				sprite.attributes.flip_vertically,
+			)
+		}
+
+		imgui.End()
+	}
+
+	get_palette_color :: proc(#any_int palette_index, offset: uint) -> u32 {
+		c := emu.ppu_get_color_from_palette(g.console, palette_index, offset)
+		return transmute(u32)c
+	}
 }
 // brk_point_instruction: int
 
@@ -724,9 +752,5 @@ render_debug_ui :: proc() {
 // 		if !cond do imgui.PopStyleColor()
 // 	}
 
-// 	get_palette_color :: proc(palette_index, offset: int) -> u32 {
-// 		c := emulator.ppu_get_color_from_palette(console, uint(palette_index), uint(offset))
-// 		return transmute(u32)c
-// 	}
 // }
 

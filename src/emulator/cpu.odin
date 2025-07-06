@@ -2,10 +2,7 @@ package emulator
 // @note small note, white space before package declaration make ols flip
 // the hell out, yes it took days to realize...
 
-import "../utils"
-import "base:runtime"
 import "core:fmt"
-import "core:strings"
 
 // For documentation regarding the CPU, please refer to:
 // https://www.cpcwiki.eu/index.php/MOS_6505
@@ -850,7 +847,6 @@ get_instruction_operand_address :: proc(
 ) {
 	// system is little endian so low byte is stored first in memory
 	cpu := console.cpu
-	err_msg_template := "could not read instruction operand at $%04X"
 	switch mode {
 	case .Immediate:
 		return_addr = cpu.pc + 1

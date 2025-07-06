@@ -1,7 +1,5 @@
 package emulator
 
-import "core:math"
-import "core:os"
 import "core:slice"
 
 iNES20 :: struct {
@@ -193,7 +191,7 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: iNES20, ok: bool) #optional_
 	// body
 	ines.header = header
 
-	trainer_base := 16
+	// trainer_base := 16
 	// assuming no trainer area
 	prg_rom_base := 16
 	chr_rom_base := 16 + prg_rom_size_bytes

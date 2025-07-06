@@ -3,7 +3,6 @@ package emulator
 import "../utils"
 import "base:runtime"
 import "core:fmt"
-import "core:log"
 import "core:slice"
 import "core:strings"
 
@@ -46,7 +45,7 @@ console_make :: proc(
 ) #optional_allocator_error {
 	// dont check error, know that intervals are closed
 	ppu_palette_size := utils.interval_size(PPU_PALLETTE_RAM_INTERVAL)
-	ppu_oam_size := utils.interval_size(PPU_OAM_INTERVAL)
+	// ppu_oam_size := utils.interval_size(PPU_OAM_INTERVAL)
 	cpu_ram_size := utils.interval_size(CPU_RAM_INTERVAL)
 	ppu_vram_size := utils.interval_size(PPU_VRAM_INTERVAL)
 
@@ -74,7 +73,7 @@ console_delete :: proc(
 	delete_slice(console.ppu.palette, allocator, loc) or_return
 	delete_slice(console.ppu.vram, allocator, loc) or_return
 	// delete_slice(console.ppu.pixel_buffer, allocator, loc) or_return
-	free(console) or_return
+	free(console, allocator, loc) or_return
 	return .None
 }
 

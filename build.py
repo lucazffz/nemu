@@ -18,7 +18,7 @@ valid_args = ["release", "debug"]
 if len(sys.argv) == 2:
     arg = sys.argv[1]
     if arg not in valid_args:
-        sys.exit("ERROR: {arg} is not valid, expected {valid}".format(arg, valid_args))
+        sys.exit("ERROR: {arg} is not a valid argument, expected {valid}".format(arg=arg, valid=valid_args))
     else:
         build_mode = arg
 
@@ -43,10 +43,10 @@ elif sys.platform == "windows":
 # Determine build flags based on build mode
 odin_build_flags_mode = ""
 if build_mode == "release":
-    odin_build_flags_mode = "-no-bounds-check -disable-assert -ignore-warnings "
+    vet = "-vet-packages:nemu,emulator,utils -vet -vet-cast -vet-tabs -vet-semicolon "
+    odin_build_flags_mode = "-no-bounds-check -disable-assert -ignore-warnings " + vet
 elif build_mode == "debug":
-    vet = "-vet-packages:nemu,emulator,utils -vet -vet-style -vet-cast -vet-tabs -vet-semicolon "
-    odin_build_flags_mode = "-debug -warnings-as-errors " + vet
+    odin_build_flags_mode = "-debug "
 
 # Assemble all build flags
 odin_build_flags_base = "-o:speed -build-mode:exe "
