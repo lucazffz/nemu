@@ -3,12 +3,16 @@
 }:
 pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
-    gcc
     odin
     ols
+
+    python314
+    pyright
+    black
+
+    gcc
     git
     cc65
-    python314
     glsl_analyzer
   ];
 
