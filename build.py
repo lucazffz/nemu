@@ -1,10 +1,13 @@
 import os
 import sys
+import platform
 
 # Check that the given platform is supported
-supported_platforms = ["linux", "windows"]
+supported_platforms = ["Linux", "Windows"]
+machine = platform.machine()
+platform = platform.system()
 
-if not sys.platform in supported_platforms:
+if not platform in supported_platforms:
     sys.exit(
         "ERROR: {platform} is not officially supported. Supported platforms are {supported}".format(
             platform=sys.platform, supported=supported_platforms
@@ -23,22 +26,9 @@ if len(sys.argv) == 2:
         build_mode = arg
 
 # Determine the build path based on platform
-out_name = ""
 build_dir_path = os.curdir + "/build/"
-if sys.platform == "linux":
-    out_name = "nemu_linux_amd64_" + build_mode + ".bin"
-elif sys.platform == "windows":
-    out_name = "nemu_windows_amd64_" + build_mode + ".exe"
-
-odin_build_flags_path = "-out:" + build_dir_path + out_name
-
-# Determine platform specific build flags
-odin_build_flags_platform = ""
-if sys.platform == "linux":
-    odin_build_flags_platform = "-target:linux_amd64 "
-elif sys.platform == "windows":
-    odin_build_flags_platform = "-target:windows_amd64 "
-
+file_name = "nemu_{platform}_{machine}_{mode}.bin".format(platform=platform, machine=machine, mode=build_mode).lower()
+odin_build_flags_path = "-out:" + build_dir_path + file_name
 
 # Determine build flags based on build mode
 odin_build_flags_mode = ""
@@ -53,7 +43,6 @@ odin_build_flags_base = "-o:speed -build-mode:exe "
 odin_build_flags = (
     odin_build_flags_base
     + odin_build_flags_mode
-    + odin_build_flags_platform
     + odin_build_flags_path
 )
 
@@ -70,4 +59,4 @@ status = os.system("odin build src " + odin_build_flags)
 if status != 0:
     print("ERROR: Could not create executable")
 else:
-    print("--- Created executable at '{path}'".format(path=build_dir_path + out_name))
+    print("--- Created executable at '{path}'".format(path=build_dir_path + file_name))
