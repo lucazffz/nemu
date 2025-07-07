@@ -23,7 +23,9 @@ GAME_HEIGHT :: 240
 
 Emulation_State :: enum {
 	Run,
-	Step,
+	Step_Cycle,
+	Step_Instruction,
+	Step_Frame,
 	Pause,
 	Run_Until_Instruction,
 	Run_Until_Cycle,
@@ -43,12 +45,14 @@ g: struct #no_copy {
 	rom_file_path:  string,
 	multi_logger:   runtime.Logger,
 	console_logger: runtime.Logger,
+	gamepad_0:      Maybe(u32),
+	gamepad_1:      Maybe(u32),
 	// Global state related to emulator
 	emulator:       struct {
-		err:               Maybe(emu.Error),
 		// @note state is written to by both threads without synchronization,
 		// may cause data race but unsure if thats a problem
 		state:             Emulation_State,
+		run_count:         i32,
 		console:           ^emu.Console,
 		mapper:            emu.Mapper,
 		frame_mutex:       sync.Mutex,
@@ -236,11 +240,10 @@ atomic_buffer_swap :: proc(buffer_1: ^[]$E, buffer_2: ^[]E, mutex: ^sync.Mutex) 
 	assert(len(buffer_1) == len(buffer_2), "buffers must have same length")
 
 	sync.mutex_lock(mutex)
-	defer sync.mutex_unlock(mutex)
-
 	temp := buffer_1^
 	buffer_1^ = buffer_2^
 	buffer_2^ = temp
+	sync.mutex_unlock(mutex)
 }
 
 shutdown :: proc() {
@@ -273,46 +276,93 @@ emulator_is_running :: proc() -> bool {
 }
 
 emulator_loop :: proc() {
-	frame_complete, instr_complete: bool;err: Maybe(emu.Error)
+	limit_frame_time: bool
 	time_stamp: time.Time
+	frame_complete, instr_complete: bool
 
 	for {
-		if frame_complete do time_stamp = time.now()
+		if emulator_is_running() && limit_frame_time {
+			if frame_complete do time_stamp = time.now()
+		}
 
 		switch g.emulator.state {
-		case .Run, .Run_Until_Instruction, .Run_Until_Cycle, .Run_Until_Frame:
-			frame_complete, instr_complete, err = emu.console_execute_clk_cycle(
-				g.emulator.console,
-				g.view.back_buffer,
-			)
-		case .Step:
-			frame_complete, instr_complete, err = emu.console_execute_clk_cycle(
-				g.emulator.console,
-				g.view.back_buffer,
-			)
+		case .Run:
+			limit_frame_time = true
+			frame_complete, instr_complete = exec()
+		case .Run_Until_Instruction:
+			limit_frame_time = false
+			frame_complete, instr_complete = exec()
+			if instr_complete do g.emulator.run_count -= 1
+			if g.emulator.run_count <= 0 && instr_complete {
+				g.emulator.state = .Pause
+			}
+		case .Run_Until_Frame:
+			limit_frame_time = false
+			frame_complete, instr_complete = exec()
+			if frame_complete do g.emulator.run_count -= 1
+			if g.emulator.run_count <= 0 && frame_complete {
+				g.emulator.state = .Pause
+			}
+		case .Run_Until_Cycle:
+			limit_frame_time = false
+			frame_complete, instr_complete = exec()
+			g.emulator.run_count -= 1
+			if g.emulator.run_count <= 0 {
+				g.emulator.state = .Pause
+			}
+		case .Step_Cycle:
+			limit_frame_time = false
+			frame_complete, instr_complete = exec()
+			g.emulator.state = .Pause
+		case .Step_Instruction:
+			limit_frame_time = false
+			instr_complete = false
+			for !instr_complete do frame_complete, instr_complete = exec()
+			g.emulator.state = .Pause
+		case .Step_Frame:
+			limit_frame_time = false
+			frame_complete = false
+			for !frame_complete do frame_complete, instr_complete = exec()
 			g.emulator.state = .Pause
 		case .Pause:
-		// do nothing
+			limit_frame_time = false
 		}
 
-		if err != nil do emu.error_log(err.?)
+		if emulator_is_running() && limit_frame_time {
+			if frame_complete {
+				dt := time.diff(time_stamp, time.now())
+				sleep_time := math.max(0, g.emulator.target_frame_time - dt)
+				time.sleep(sleep_time)
 
-
-		if instr_complete {
-			update_controller_input()
-		}
-
-		if frame_complete {
-			atomic_buffer_swap(&g.view.front_buffer, &g.view.back_buffer, &g.view.render_mutex)
-
-			dt := time.diff(time_stamp, time.now())
-			sleep_time := math.max(0, g.emulator.target_frame_time - dt)
-			time.sleep(sleep_time)
-
-			g.emulator.frame_time = time.diff(time_stamp, time.now())
+				g.emulator.frame_time = time.diff(time_stamp, time.now())
+			}
 		}
 
 		free_all(context.temp_allocator)
+	}
+
+	@(require_results)
+	exec :: proc() -> (frame_complete: bool, instr_complete: bool) {
+		err: Maybe(emu.Error)
+
+		frame_complete, instr_complete, err = emu.console_execute_clk_cycle(
+			g.emulator.console,
+			g.view.back_buffer,
+		)
+
+		if err != nil do emu.error_log(err.?)
+		if instr_complete do instruction_complete_cb()
+		if frame_complete do frame_complete_cb()
+		return
+	}
+
+	frame_complete_cb :: proc() {
+		atomic_buffer_swap(&g.view.front_buffer, &g.view.back_buffer, &g.view.render_mutex)
+
+	}
+
+	instruction_complete_cb :: proc() {
+		update_controller_input()
 	}
 }
 
@@ -336,8 +386,10 @@ main_loop :: proc() {
 			rl.UpdateTexture(g.view.game_view_texture, raw_data(g.view.front_buffer))
 		}
 
+		update_gamepad_connection()
+
 		rl.BeginDrawing()
-		// rl.ClearBackground(rl.BLACK)
+		rl.ClearBackground(rl.BLACK)
 
 		if !g.debug_ui.show {
 			rl.DrawTexturePro(
@@ -353,7 +405,6 @@ main_loop :: proc() {
 			rlimgui.begin()
 			render_debug_ui()
 			rlimgui.end()
-
 		}
 
 		// Drawing on top of ImGui (call after 'rlimgui.end()' to do that, as showed here)
@@ -361,13 +412,32 @@ main_loop :: proc() {
 		rl.EndDrawing()
 	}
 
+	update_gamepad_connection :: proc() {
+		if rl.IsGamepadAvailable(0) {
+			if g.gamepad_0 == nil {
+				log.infof("INFO: Gamepad '%s' set as controller 1", rl.GetGamepadName(0))
+				g.gamepad_0 = 0
+			}
+		} else {
+			if g.gamepad_0 != nil {
+				g.gamepad_0 = nil
+				log.info("INFO: Gamepad disconnected from controller 1")
+			}
+		}
+
+		if rl.IsGamepadAvailable(1) {
+			if g.gamepad_1 == nil {
+				log.infof("INFO: Gamepad '%s' set as controller 2", rl.GetGamepadName(1))
+				g.gamepad_1 = 1
+			}
+		} else {
+			if g.gamepad_1 != nil {
+				g.gamepad_1 = nil
+				log.info("INFO: Gamepad disconnected from controller 2")
+			}
+		}
+	}
 }
-
-console_instruction_complete_cb :: proc() {
-	update_controller_input()
-
-}
-
 
 get_game_view_rectangle :: proc(
 	window_width: f32,
@@ -398,29 +468,43 @@ get_game_view_rectangle :: proc(
 }
 
 update_controller_input :: proc() {
-	buttons: emu.Buttons
+	buttons_1: emu.Buttons
+	buttons_2: emu.Buttons
 
-	if rl.IsKeyDown(.LEFT) do buttons += {.left}
-	if rl.IsKeyDown(.RIGHT) do buttons += {.right}
-	if rl.IsKeyDown(.UP) do buttons += {.up}
-	if rl.IsKeyDown(.DOWN) do buttons += {.down}
-	if rl.IsKeyDown(.X) do buttons += {.a}
-	if rl.IsKeyDown(.Z) do buttons += {.b}
-	if rl.IsKeyDown(.ONE) do buttons += {.select}
-	if rl.IsKeyDown(.TWO) do buttons += {.start}
+	// @todo add support for second player on keyboard
+	if rl.IsKeyDown(.LEFT) do buttons_1 += {.left}
+	if rl.IsKeyDown(.RIGHT) do buttons_1 += {.right}
+	if rl.IsKeyDown(.UP) do buttons_1 += {.up}
+	if rl.IsKeyDown(.DOWN) do buttons_1 += {.down}
+	if rl.IsKeyDown(.X) do buttons_1 += {.a}
+	if rl.IsKeyDown(.Z) do buttons_1 += {.b}
+	if rl.IsKeyDown(.ONE) do buttons_1 += {.select}
+	if rl.IsKeyDown(.TWO) do buttons_1 += {.start}
 
-	if rl.IsGamepadAvailable(0) {
-		if rl.IsGamepadButtonDown(0, .LEFT_FACE_LEFT) do buttons += {.left}
-		if rl.IsGamepadButtonDown(0, .LEFT_FACE_RIGHT) do buttons += {.right}
-		if rl.IsGamepadButtonDown(0, .LEFT_FACE_UP) do buttons += {.up}
-		if rl.IsGamepadButtonDown(0, .LEFT_FACE_DOWN) do buttons += {.down}
-		if rl.IsGamepadButtonDown(0, .RIGHT_FACE_DOWN) do buttons += {.a}
-		if rl.IsGamepadButtonDown(0, .RIGHT_FACE_LEFT) do buttons += {.b}
-		if rl.IsGamepadButtonDown(0, .MIDDLE_LEFT) do buttons += {.select}
-		if rl.IsGamepadButtonDown(0, .MIDDLE_RIGHT) do buttons += {.start}
+	if g.gamepad_0 != nil {
+		if rl.IsGamepadButtonDown(0, .LEFT_FACE_LEFT) do buttons_1 += {.left}
+		if rl.IsGamepadButtonDown(0, .LEFT_FACE_RIGHT) do buttons_1 += {.right}
+		if rl.IsGamepadButtonDown(0, .LEFT_FACE_UP) do buttons_1 += {.up}
+		if rl.IsGamepadButtonDown(0, .LEFT_FACE_DOWN) do buttons_1 += {.down}
+		if rl.IsGamepadButtonDown(0, .RIGHT_FACE_DOWN) do buttons_1 += {.a}
+		if rl.IsGamepadButtonDown(0, .RIGHT_FACE_LEFT) do buttons_1 += {.b}
+		if rl.IsGamepadButtonDown(0, .MIDDLE_LEFT) do buttons_1 += {.select}
+		if rl.IsGamepadButtonDown(0, .MIDDLE_RIGHT) do buttons_1 += {.start}
 	}
 
-	emu.controller_set_buttons(&g.emulator.console.controller1, buttons)
+	if g.gamepad_1 != nil {
+		if rl.IsGamepadButtonDown(1, .LEFT_FACE_LEFT) do buttons_2 += {.left}
+		if rl.IsGamepadButtonDown(1, .LEFT_FACE_RIGHT) do buttons_2 += {.right}
+		if rl.IsGamepadButtonDown(1, .LEFT_FACE_UP) do buttons_2 += {.up}
+		if rl.IsGamepadButtonDown(1, .LEFT_FACE_DOWN) do buttons_2 += {.down}
+		if rl.IsGamepadButtonDown(1, .RIGHT_FACE_DOWN) do buttons_2 += {.a}
+		if rl.IsGamepadButtonDown(1, .RIGHT_FACE_LEFT) do buttons_2 += {.b}
+		if rl.IsGamepadButtonDown(1, .MIDDLE_LEFT) do buttons_2 += {.select}
+		if rl.IsGamepadButtonDown(1, .MIDDLE_RIGHT) do buttons_2 += {.start}
+	}
+
+	emu.controller_set_buttons(&g.emulator.console.controller1, buttons_1)
+	emu.controller_set_buttons(&g.emulator.console.controller2, buttons_2)
 }
 
 init_debug_ui :: proc() {
@@ -455,9 +539,11 @@ render_debug_ui :: proc() {
 	@(static) show_game_view: bool = true
 	@(static) show_log: bool = true
 	@(static) show_pattern_tables: bool
-	@(static) show_console_state: bool
+	@(static) show_cpu_state: bool
+	@(static) show_ppu_state: bool
 	@(static) show_palettes: bool
 	@(static) show_oam: bool
+	@(static) show_break_in: bool
 
 	imgui.DockSpaceOverViewport(g.debug_ui.dockspace_id)
 
@@ -468,10 +554,11 @@ render_debug_ui :: proc() {
 		if imgui.BeginMenu("View") {
 			imgui.Checkbox("Game View", &show_game_view)
 			imgui.Checkbox("Log", &show_log)
-			imgui.Checkbox("Pattern Tables", &show_pattern_tables)
-			imgui.Checkbox("Console State", &show_console_state)
-			imgui.Checkbox("Palettes", &show_palettes)
-			imgui.Checkbox("PPU OAM", &show_oam)
+			imgui.Checkbox("Pattern Table view", &show_pattern_tables)
+			imgui.Checkbox("Palette Table View", &show_palettes)
+			imgui.Checkbox("CPU State View", &show_cpu_state)
+			imgui.Checkbox("PPU State View", &show_ppu_state)
+			imgui.Checkbox("OAM View", &show_oam)
 
 			imgui.EndMenu()
 		}
@@ -489,9 +576,24 @@ render_debug_ui :: proc() {
 				}
 			}
 
-			if imgui.MenuItem("Step", enabled = !emulator_is_running()) {
-				g.emulator.state = .Step
-				log.info("INFO: Step emulator")
+			if imgui.BeginMenu("Step", enabled = !emulator_is_running()) {
+				if imgui.MenuItem("Step Cycle", enabled = !emulator_is_running()) {
+					g.emulator.state = .Step_Cycle
+				}
+
+				if imgui.MenuItem("Step Instruction", enabled = !emulator_is_running()) {
+					g.emulator.state = .Step_Instruction
+				}
+
+				if imgui.MenuItem("Step Frame", enabled = !emulator_is_running()) {
+					g.emulator.state = .Step_Frame
+				}
+
+				imgui.EndMenu()
+			}
+
+			if imgui.MenuItem("Break In", enabled = !emulator_is_running()) {
+				show_break_in = true
 			}
 
 			if imgui.MenuItem("Reset", enabled = !emulator_is_running()) {
@@ -542,6 +644,47 @@ render_debug_ui :: proc() {
 		}
 
 		imgui.EndMainMenuBar()
+	}
+
+
+	if show_break_in {
+		@(static) count: i32
+		@(static) selection: enum {
+			Instruction,
+			Frame,
+			Cycle,
+		} = .Instruction
+
+		if imgui.Begin("Break in", &show_break_in, {.AlwaysAutoResize, .NoDocking, .NoCollapse}) {
+			imgui.InputInt("Count", &count)
+			if imgui.RadioButton("Instructions", selection == .Instruction) {
+				selection = .Instruction
+			}
+
+			if imgui.RadioButton("Frames", selection == .Frame) {
+				selection = .Frame
+			}
+
+			if imgui.RadioButton("Cycles", selection == .Cycle) {
+				selection = .Cycle
+			}
+
+			if imgui.Button("Run") {
+				g.emulator.run_count = count
+				switch selection {
+				case .Instruction:
+					g.emulator.state = .Run_Until_Instruction
+				case .Frame:
+					g.emulator.state = .Run_Until_Frame
+				case .Cycle:
+					g.emulator.state = .Run_Until_Cycle
+				}
+
+				show_break_in = false
+			}
+
+			imgui.End()
+		}
 	}
 
 	if show_game_view {
@@ -893,184 +1036,112 @@ render_debug_ui :: proc() {
 		imgui.End()
 	}
 
+	if show_cpu_state {
+		c := g.emulator.console.cpu
+		imgui.Begin("CPU State View", &show_cpu_state)
+		imgui.BeginGroup()
+		imgui.Text("X:  %02X", c.x)
+		imgui.Text("Y:  %02X", c.y)
+		imgui.Text("A:  %02X", c.acc)
+		imgui.EndGroup()
+		imgui.SameLine()
+		imgui.BeginGroup()
+		imgui.Text("SP: %02X", c.sp)
+		imgui.Text("PC: %04X", c.pc)
+		imgui.EndGroup()
+		imgui.SameLine()
+		imgui.BeginGroup()
+		flag_text("C", .CF in c.status)
+		imgui.SameLine()
+		flag_text("Z", .ZF in c.status)
+		imgui.SameLine()
+		flag_text("I", .IF in c.status)
+		imgui.SameLine()
+		flag_text("V", .VF in c.status)
+		imgui.SameLine()
+		flag_text("N", .NF in c.status)
+		imgui.Text("Cycle count:       %04d", c.cycle_count)
+		imgui.Text("Instruction count: %04d", c.instruction_count)
+		imgui.EndGroup()
+		imgui.SeparatorText("Instructions")
+		imgui.Text("%s", emu.console_state_to_string(g.emulator.console))
+		imgui.End()
+	}
+
+	if show_ppu_state {
+		p := g.emulator.console.ppu
+		imgui.Begin("PPU State", nil)
+		imgui.SeparatorText("PPUCTRL")
+		imgui.BeginGroup()
+		imgui.Text("nametable base address:           %d", p.ctrl.nametable_base_address)
+		imgui.Text(
+			"VRAM address increment:           %d",
+			p.ctrl.vram_address_increment == 0 ? 1 : 32,
+		)
+		imgui.Text(
+			"sprite pattern table address:     $%s",
+			p.ctrl.sprite_pattern_table_address == 0 ? "0000" : "1000",
+		)
+		imgui.Text(
+			"background pattern table address: $%s",
+			p.ctrl.background_pattern_table_address == 0 ? "0000" : "1000",
+		)
+		imgui.EndGroup()
+		imgui.SameLine()
+		imgui.BeginGroup()
+		imgui.Text("sprite size:         %s", p.ctrl.sprite_size == 0 ? "8x8" : "8x16")
+		imgui.Text("master slave select: %d", p.ctrl.master_slave_select)
+		imgui.Text("vblank NMI enabled:  %s", p.ctrl.vblank_nmi_enable ? "true" : "false")
+		imgui.EndGroup()
+		imgui.SeparatorText("PPUMASK")
+		imgui.BeginGroup()
+		flag_text("greyscale", p.mask.greyscale)
+		flag_text("show background", p.mask.show_background_in_margin)
+		flag_text("show sprites", p.mask.show_sprites_in_margin)
+		flag_text("enable background rendering", p.mask.enable_background_rendering)
+		imgui.EndGroup()
+		imgui.SameLine()
+		imgui.BeginGroup()
+		flag_text("enable sprite rendering", p.mask.enable_sprite_rendering)
+		flag_text("emphasize red", p.mask.emphasize_red)
+		flag_text("emphasize green", p.mask.emphasize_green)
+		flag_text("emphasize blue", p.mask.emphasize_blue)
+		imgui.EndGroup()
+		imgui.SeparatorText("PPUSTATUS")
+		flag_text("sprite overflow", p.status.sprite_overflow)
+		imgui.SameLine()
+		flag_text("sprite_0_hit", p.status.sprite_0_hit)
+		imgui.SameLine()
+		flag_text("vblank", p.status.vblank)
+		// imgui.SeparatorText("Other")
+		// imgui.BeginGroup()
+		// imgui.Text("OAM address:  $%02X", console.ppu.oamaddr)
+		// imgui.Text("scroll:       %02X", console.ppu..ppuscroll)
+		// imgui.EndGroup()
+		// imgui.SameLine()
+		// imgui.BeginGroup()
+		// imgui.Text("VRAM address: $%04X", console.ppu.mmio_register_bank.ppuaddr)
+		// imgui.Text("OAM DMA:      $%02X", console.ppu.mmio_register_bank.oamdma)
+		// imgui.EndGroup()
+		imgui.SeparatorText("Internal Registers")
+		imgui.Text("scanline: %d", p.scanline)
+		imgui.Text("cycle:    %d", p.cycle)
+
+
+		imgui.End()
+
+
+	}
+
+	flag_text :: proc(text: cstring, cond: bool) {
+		if !cond do imgui.PushStyleColor(.Text, 0xaaffffff)
+		imgui.Text(text)
+		if !cond do imgui.PopStyleColor()
+	}
+
 	get_palette_color :: proc(#any_int palette_index, offset: uint) -> u32 {
 		c := emu.ppu_get_color_from_palette(g.emulator.console, palette_index, offset)
 		return transmute(u32)c
 	}
 }
-// brk_point_instruction: int
-
-// render_debug_ui :: proc() {
-// 	@(static) show_pattern_tables: bool = false
-// 	@(static) show_ppu_state: bool = false
-// 	@(static) show_cpu_state: bool = false
-// 	@(static) show_ppu_palettes: bool = false
-// 	@(static) show_ppu_oam: bool = false
-// 	str_buf := make([]u8, 1024)
-// 	defer delete(str_buf)
-
-// 	// imgui.ShowDemoWindow(nil)
-
-// 	if imgui.BeginMainMenuBar() {
-// 		imgui.Checkbox("Pattern Tables", &show_pattern_tables)
-// 		imgui.Checkbox("CPU State", &show_cpu_state)
-// 		imgui.Checkbox("PPU State", &show_ppu_state)
-// 		imgui.Checkbox("Palettes", &show_ppu_palettes)
-// 		imgui.Checkbox("OAM", &show_ppu_oam)
-// 		imgui.InputScalar("pause at cycle", .U32, &brk_point_instruction)
-// 	}
-// 	imgui.EndMainMenuBar()
-
-
-// 	if show_pattern_tables {
-// 		imgui.Begin("Pattern Tables", nil, {.AlwaysAutoResize})
-// 		val := emulator.ppu_read_from_address(console, 0x2000)
-// 		rlimgui.image_size(&pattern_table_0_texture, {256, 256})
-// 		imgui.SameLine()
-// 		rlimgui.image_size(&pattern_table_1_texture, {256, 256})
-// 		imgui.End()
-// 	}
-
-// 	if show_ppu_palettes {
-// 		imgui.Begin("Palettes", nil)
-// 		draw_list := imgui.GetWindowDrawList()
-// 		pos := imgui.GetWindowPos()
-// 		pos.y += 30
-// 		size: f32 = 20
-// 		for j in 0 ..< 8 {
-// 			for i in 0 ..< 4 {
-// 				imgui.DrawList_AddRectFilled(
-// 					draw_list,
-// 					{pos.x + f32(i) * size, (pos.y + f32(j) * size)},
-// 					{pos.x + (f32(i) + 1) * size, pos.y + (f32(j) + 1) * size},
-// 					get_palette_color(j, i),
-// 				)
-// 			}
-// 		}
-// 		imgui.End()
-// 	}
-
-// 	if show_ppu_oam {
-// 		imgui.Begin("OAM", nil)
-// 		for sprite in console.ppu.oam.sprites {
-// 			imgui.Text(
-// 				"(%d, %d), ID: %d, PAL: %d, PRI: %d, HFLIP: %d, VFLIP: %d",
-// 				sprite.x_pos,
-// 				sprite.y_pos,
-// 				sprite.tile_index,
-// 				sprite.attributes.palette_index,
-// 				sprite.attributes.priority,
-// 				sprite.attributes.flip_horizontally,
-// 				sprite.attributes.flip_vertically,
-// 			)
-// 		}
-
-// 		imgui.End()
-// 	}
-
-// 	if show_cpu_state {
-// 		imgui.Begin("CPU State", nil)
-// 		imgui.BeginGroup()
-// 		imgui.Text("X:  %02X", console.cpu.x)
-// 		imgui.Text("Y:  %02X", console.cpu.y)
-// 		imgui.Text("A:  %02X", console.cpu.acc)
-// 		imgui.EndGroup()
-// 		imgui.SameLine()
-// 		imgui.BeginGroup()
-// 		imgui.Text("SP: %02X", console.cpu.sp)
-// 		imgui.Text("PC: %04X", console.cpu.pc)
-// 		imgui.EndGroup()
-// 		imgui.SameLine()
-// 		imgui.BeginGroup()
-// 		flag_text("C", .CF in console.cpu.status)
-// 		imgui.SameLine()
-// 		flag_text("Z", .ZF in console.cpu.status)
-// 		imgui.SameLine()
-// 		flag_text("I", .IF in console.cpu.status)
-// 		imgui.SameLine()
-// 		flag_text("V", .VF in console.cpu.status)
-// 		imgui.SameLine()
-// 		flag_text("N", .NF in console.cpu.status)
-// 		imgui.Text("Cycle count:       %04d", console.cpu.cycle_count)
-// 		imgui.Text("Instruction count: %04d", console.cpu.instruction_count)
-// 		imgui.EndGroup()
-// 		imgui.SeparatorText("Instructions")
-// 		imgui.Text("%s", emulator.console_state_to_string(console))
-// 		imgui.End()
-// 	}
-
-// 	if show_ppu_state {
-// 		imgui.Begin("PPU State", nil)
-// 		imgui.SeparatorText("PPUCTRL")
-// 		imgui.BeginGroup()
-// 		imgui.Text("nametable base address:           %d", console.ppu.ctrl.nametable_base_address)
-// 		imgui.Text(
-// 			"VRAM address increment:           %d",
-// 			console.ppu.ctrl.vram_address_increment == 0 ? 1 : 32,
-// 		)
-// 		imgui.Text(
-// 			"sprite pattern table address:     $%s",
-// 			console.ppu.ctrl.sprite_pattern_table_address == 0 ? "0000" : "1000",
-// 		)
-// 		imgui.Text(
-// 			"background pattern table address: $%s",
-// 			console.ppu.ctrl.background_pattern_table_address == 0 ? "0000" : "1000",
-// 		)
-// 		imgui.EndGroup()
-// 		imgui.SameLine()
-// 		imgui.BeginGroup()
-// 		imgui.Text("sprite size:         %s", console.ppu.ctrl.sprite_size == 0 ? "8x8" : "8x16")
-// 		imgui.Text("master slave select: %d", console.ppu.ctrl.master_slave_select)
-// 		imgui.Text(
-// 			"vblank NMI enabled:  %s",
-// 			console.ppu.ctrl.vblank_nmi_enable ? "true" : "false",
-// 		)
-// 		imgui.EndGroup()
-// 		imgui.SeparatorText("PPUMASK")
-// 		imgui.BeginGroup()
-// 		flag_text("greyscale", console.ppu.mask.greyscale)
-// 		flag_text("show background", console.ppu.mask.show_background_in_margin)
-// 		flag_text("show sprites", console.ppu.mask.show_sprites_in_margin)
-// 		flag_text("enable background rendering", console.ppu.mask.enable_background_rendering)
-// 		imgui.EndGroup()
-// 		imgui.SameLine()
-// 		imgui.BeginGroup()
-// 		flag_text("enable sprite rendering", console.ppu.mask.enable_sprite_rendering)
-// 		flag_text("emphasize red", console.ppu.mask.emphasize_red)
-// 		flag_text("emphasize green", console.ppu.mask.emphasize_green)
-// 		flag_text("emphasize blue", console.ppu.mask.emphasize_blue)
-// 		imgui.EndGroup()
-// 		imgui.SeparatorText("PPUSTATUS")
-// 		flag_text("sprite overflow", console.ppu.status.sprite_overflow)
-// 		imgui.SameLine()
-// 		flag_text("sprite_0_hit", console.ppu.status.sprite_0_hit)
-// 		imgui.SameLine()
-// 		flag_text("vblank", console.ppu.status.vblank)
-// 		// imgui.SeparatorText("Other")
-// 		// imgui.BeginGroup()
-// 		// imgui.Text("OAM address:  $%02X", console.ppu.oamaddr)
-// 		// imgui.Text("scroll:       %02X", console.ppu..ppuscroll)
-// 		// imgui.EndGroup()
-// 		// imgui.SameLine()
-// 		// imgui.BeginGroup()
-// 		// imgui.Text("VRAM address: $%04X", console.ppu.mmio_register_bank.ppuaddr)
-// 		// imgui.Text("OAM DMA:      $%02X", console.ppu.mmio_register_bank.oamdma)
-// 		// imgui.EndGroup()
-// 		imgui.SeparatorText("Internal Registers")
-// 		imgui.Text("scanline: %d", console.ppu.scanline)
-// 		imgui.Text("cycle:    %d", console.ppu.cycle)
-
-
-// 		imgui.End()
-
-
-// 	}
-
-// 	flag_text :: proc(text: cstring, cond: bool) {
-// 		if !cond do imgui.PushStyleColor(.Text, 0xaaffffff)
-// 		imgui.Text(text)
-// 		if !cond do imgui.PopStyleColor()
-// 	}
-
-// }
 
