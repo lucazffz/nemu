@@ -82,17 +82,20 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 }
 
 console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
-	// @note must reassign memory pointers if want to intialize new cpu and ppu
-	// in console, do like this instead:
-	console.cpu.sp = 0xfd
-	console.cpu.pc = 0xc000
-	console.cpu.status = {.IF}
-	console.cpu.instruction_count = 0
+	c: Console
 
-	// vblank and sprite overflow often set after power-up
-	// console.ppu.mmio_register_bank.ppustatus._unused = 0x10
+	c.cpu.sp = 0xfd
+	c.cpu.pc = 0xc000
+	c.cpu.status = {.IF}
 
-	console.mapper = mapper
+	// assign slices
+	c.ram = console.ram
+	c.ppu.vram = console.ppu.vram
+	c.ppu.palette = console.ppu.palette
+
+	c.mapper = mapper
+
+	console^ = c
 }
 
 console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {

@@ -102,7 +102,7 @@ error_to_string :: proc(err: Error, prefix := "ERROR: ") -> string {
 	return fmt.tprintf("%s%s [%v]", prefix, msg, err.type)
 }
 
-error_log :: proc(err: Error, level := log.Level.Error, logger := context.logger) {
+error_log :: proc(err: Error, level := log.Level.Error) {
 	prefix: string
 	switch level {
 	case .Debug:
@@ -119,4 +119,5 @@ error_log :: proc(err: Error, level := log.Level.Error, logger := context.logger
 	msg := error_to_string(err, prefix)
 	log.log(level, msg, location = err.loc)
 }
+
 

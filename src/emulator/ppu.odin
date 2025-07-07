@@ -350,11 +350,9 @@ ppu_increment_loopy_register :: proc(reg: ^Loopy_Register, vertical_increment: b
 
 ppu_pattern_table_palette_offset_to_buffer :: proc(
 	console: ^Console,
-	buffer: []uint,
-	table_index: uint,
+	buffer: []u32,
+	table_index: int,
 ) {
-	table_index := int(table_index) // avoid a whole bunch of type conversions 
-
 	// each tile in a pattern table is 16 bytes (consistsof 8x8 pixels of 2 bits each)
 	// each pattern table contain 16x16 tiles so each row is 256 bytes
 	// the entire pattern table size is 4KB
@@ -377,7 +375,7 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 					tile_lsb >>= 1;tile_msb >>= 1
 					x := ntile_x * 8 + (7 - col)
 					y := ntile_y * 8 + row
-					buffer[y * 128 + x] = uint(pixel_palette_offset)
+					buffer[y * 128 + x] = u32(pixel_palette_offset)
 				}
 			}
 		}

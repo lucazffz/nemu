@@ -5,11 +5,9 @@ pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
     odin
     ols
-
     python314
     pyright
     black
-
     gcc
     git
     cc65

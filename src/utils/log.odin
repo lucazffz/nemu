@@ -6,33 +6,29 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:time"
-
-MAX_STR_LEN :: 256
 
 ImGui_Logger_Data :: struct {
 	text_buffer:      ^imgui.TextBuffer,
 	allocator:        runtime.Allocator,
 	ident:            string,
-	scroll_to_bottom: bool,
-	// limit:       Maybe(int),
+	mutex:            Maybe(^sync.Mutex),
 }
 
 create_imgui_logger :: proc(
 	buf: ^imgui.TextBuffer,
-	// limit: Maybe(int) = nil,
+	mutex: ^sync.Mutex = nil,
 	lowest := log.Level.Debug,
 	opt := log.Default_Console_Logger_Opts,
 	ident := "",
 	allocator := context.allocator,
 ) -> log.Logger {
-	// cap := limit == nil ? queue.DEFAULT_CAPACITY : limit.?
-	// backing_buf := make_slice([][MAX_STR_LEN]byte, cap, allocator)
 	data := new(ImGui_Logger_Data, allocator)
 	data.allocator = allocator
 	data.ident = ident
 	data.text_buffer = buf
-	// queue.init_from_slice(&data.q, backing_buf)
+	data.mutex = mutex
 
 	return log.Logger{imgui_logger_proc, rawptr(data), lowest, opt}
 }
@@ -68,21 +64,16 @@ imgui_logger_proc :: proc(
 	//TODO(Hoej): When we have better atomics and such, make this thread-safe
 
 	c_str, _ := strings.to_cstring(&buf)
-	imgui.TextBuffer_append(data.text_buffer, c_str)
 
-	data.scroll_to_bottom = true
+	if mutex, ok := data.mutex.?; ok {
+		sync.mutex_guard(mutex)
+		imgui.TextBuffer_append(data.text_buffer, c_str)
+	} else {
+		imgui.TextBuffer_append(data.text_buffer, c_str)
+	}
 }
 
 
-imgui_logger_get_scroll_to_bottom :: proc(log: log.Logger) -> bool {
-	data := cast(^ImGui_Logger_Data)log.data
-	return data.scroll_to_bottom
-}
-
-imgui_logger_set_scroll_to_bottom :: proc(log: ^log.Logger, val: bool) {
-	data := cast(^ImGui_Logger_Data)log.data
-	data.scroll_to_bottom = val
-}
 
 destroy_imgui_logger :: proc(log: log.Logger, allocator := context.allocator) {
 	free(log.data, allocator)

@@ -7,6 +7,7 @@ import "core:log"
 import "core:math"
 import "core:mem"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -20,6 +21,15 @@ import rl "vendor:raylib"
 GAME_WIDTH :: 256
 GAME_HEIGHT :: 240
 
+Emulation_State :: enum {
+	Run,
+	Step,
+	Pause,
+	Run_Until_Instruction,
+	Run_Until_Cycle,
+	Run_Until_Frame,
+}
+
 // ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, #directory + "./assets")
 
 // default_context: runtime.Context
@@ -27,31 +37,27 @@ GAME_HEIGHT :: 240
 // Vec2 :: [2]f32
 // Vec3 :: [2]f32
 
-// pattern_table_0_texture: rl.Texture2D
-// pattern_table_1_texture: rl.Texture2D
 
 // All global program state is organized within this variable
-@(private)
-g: struct {
-	console:        ^emu.Console,
-	mapper:         emu.Mapper,
+g: struct #no_copy {
 	rom_file_path:  string,
 	multi_logger:   runtime.Logger,
 	console_logger: runtime.Logger,
 	// Global state related to emulator
 	emulator:       struct {
-		// frame_cond:        sync.Cond,
+		err:               Maybe(emu.Error),
+		// @note state is written to by both threads without synchronization,
+		// may cause data race but unsure if thats a problem
+		state:             Emulation_State,
+		console:           ^emu.Console,
+		mapper:            emu.Mapper,
 		frame_mutex:       sync.Mutex,
 		frame_time:        time.Duration,
 		target_frame_time: time.Duration,
-		// frame_complete:    bool,
-		// instruction_complete: bool,
-		run:               bool,
 	},
 	// Global state related to game view
 	view:           struct {
 		target_refresh_rate: i32,
-		// render_cond:         sync.Cond,
 		render_mutex:        sync.Mutex,
 		game_view_texture:   rl.Texture2D,
 		front_buffer:        []emu.Color,
@@ -59,12 +65,15 @@ g: struct {
 	},
 	// Global state related to debug UI
 	debug_ui:       struct {
-		logger:                 runtime.Logger,
-		text_buf:               imgui.TextBuffer,
-		show:                   bool,
-		dockspace_id:           imgui.ID,
-		patter_table_0_texture: rl.RenderTexture2D,
-		patter_table_1_texture: rl.RenderTexture2D,
+		log_mutex:               sync.Mutex,
+		logger:                  runtime.Logger,
+		log_buf:                 imgui.TextBuffer,
+		show:                    bool,
+		dockspace_id:            imgui.ID,
+		pattern_table_0_texture: rl.Texture2D,
+		pattern_table_1_texture: rl.Texture2D,
+		pattern_table_0_buffer:  []u32,
+		pattern_table_1_buffer:  []u32,
 	},
 }
 
@@ -95,44 +104,49 @@ main :: proc() {
 	initialize()
 
 	// cannot setup imgui logger before initialization
-	g.debug_ui.logger = utils.create_imgui_logger(&g.debug_ui.text_buf, opt = {.Time})
+	g.debug_ui.logger = utils.create_imgui_logger(
+		&g.debug_ui.log_buf,
+		&g.debug_ui.log_mutex,
+		opt = {.Time},
+	)
+
 	g.multi_logger = log.create_multi_logger(console_logger, g.debug_ui.logger)
 	context.logger = g.multi_logger
 
-	th := thread.create_and_start(emulator_loop, nil, .High, true)
+	thread.create_and_start(emulator_loop, context, .High, true)
 	main_loop()
 
-	thread.terminate(th, 0)
 	shutdown()
-}
 
-log_tracking_allocator_results :: proc(track: ^mem.Tracking_Allocator) {
-	if len(track.allocation_map) > 0 {
-		// use temp allocator as to not interfere with the tracking allocator
-		if builder, err := strings.builder_make_none(context.temp_allocator); err == nil {
-			fmt.sbprintfln(
-				&builder,
-				"%v allocations not freed during termination:",
-				len(track.allocation_map),
-			)
+	return
 
-			for _, entry in track.allocation_map {
-				fmt.sbprintfln(&builder, " - %v bytes @ %v", entry.size, entry.location)
+	log_tracking_allocator_results :: proc(track: ^mem.Tracking_Allocator) {
+		if len(track.allocation_map) > 0 {
+			// use temp allocator as to not interfere with the tracking allocator
+			if builder, err := strings.builder_make_none(context.temp_allocator); err == nil {
+				fmt.sbprintfln(
+					&builder,
+					"%v allocations not freed during termination:",
+					len(track.allocation_map),
+				)
+
+				for _, entry in track.allocation_map {
+					fmt.sbprintfln(&builder, " - %v bytes @ %v", entry.size, entry.location)
+				}
+
+				log.warn(strings.to_string(builder))
+			} else {
+				log.error("could not print unfreed allocations", err)
 			}
 
-			log.warn(strings.to_string(builder))
-		} else {
-			log.error("could not print unfreed allocations", err)
+			mem.tracking_allocator_destroy(track)
 		}
-
-		mem.tracking_allocator_destroy(track)
 	}
 }
 
-initialize :: proc() {
 
+initialize :: proc() {
 	// Read ROM from iNES file
-	// rom_file_path := #directory + "../../roms/Super Mario Bros. (World).nes"
 	rom, err := os.read_entire_file_or_err(g.rom_file_path)
 	if err != nil {
 		log.errorf("ERROR: could not open file '%s', %v", g.rom_file_path, err)
@@ -154,20 +168,23 @@ initialize :: proc() {
 		os.exit(1)
 	}
 
-	g.console = emu.console_make()
-	g.mapper = emu.mapper_make_from_ines(ines)
+	g.emulator.console = emu.console_make()
+	g.emulator.mapper = emu.mapper_make_from_ines(ines)
 
-	emu.console_initialize_with_mapper(g.console, g.mapper)
-	_ = emu.console_reset(g.console)
+	emu.console_initialize_with_mapper(g.emulator.console, g.emulator.mapper)
+	_ = emu.console_reset(g.emulator.console)
 
 	g.emulator.target_frame_time = time.Second / 60
 
 	g.view.front_buffer = make([]emu.Color, GAME_WIDTH * GAME_HEIGHT)
 	g.view.back_buffer = make([]emu.Color, GAME_WIDTH * GAME_HEIGHT)
 
+	g.debug_ui.pattern_table_0_buffer = make([]u32, 128 * 128)
+	g.debug_ui.pattern_table_1_buffer = make([]u32, 128 * 128)
+
 
 	// Intialize Raylib
-	rl.SetConfigFlags({rl.ConfigFlag.WINDOW_RESIZABLE, rl.ConfigFlag.WINDOW_ALWAYS_RUN})
+	rl.SetConfigFlags({.WINDOW_RESIZABLE, .WINDOW_ALWAYS_RUN, .VSYNC_HINT})
 	rl.InitWindow(GAME_WIDTH * 2, GAME_HEIGHT * 2, "Nemu")
 
 
@@ -192,12 +209,26 @@ initialize :: proc() {
 	}
 	g.view.game_view_texture = rl.LoadTextureFromImage(game_view_img)
 
-	// when ODIN_DEBUG {
-	// 	g.debug_ui.show = true
-	// } else {
-	// }
-	g.emulator.run = true
+	pattern_table_0_img := rl.Image {
+		data    = raw_data(g.debug_ui.pattern_table_0_buffer),
+		width   = 128,
+		height  = 128,
+		mipmaps = 1,
+		format  = rl.PixelFormat.UNCOMPRESSED_R8G8B8A8,
+	}
 
+	pattern_table_1_img := rl.Image {
+		data    = raw_data(g.debug_ui.pattern_table_0_buffer),
+		width   = 128,
+		height  = 128,
+		mipmaps = 1,
+		format  = rl.PixelFormat.UNCOMPRESSED_R8G8B8A8,
+	}
+
+	g.debug_ui.pattern_table_0_texture = rl.LoadTextureFromImage(pattern_table_0_img)
+	g.debug_ui.pattern_table_1_texture = rl.LoadTextureFromImage(pattern_table_1_img)
+
+	g.emulator.state = .Run
 }
 
 atomic_buffer_swap :: proc(buffer_1: ^[]$E, buffer_2: ^[]E, mutex: ^sync.Mutex) {
@@ -211,7 +242,6 @@ atomic_buffer_swap :: proc(buffer_1: ^[]$E, buffer_2: ^[]E, mutex: ^sync.Mutex) 
 	buffer_2^ = temp
 }
 
-
 shutdown :: proc() {
 	utils.destroy_imgui_logger(g.debug_ui.logger)
 	log.destroy_multi_logger(g.multi_logger)
@@ -221,25 +251,51 @@ shutdown :: proc() {
 
 	rl.CloseWindow()
 
-	emu.console_delete(g.console)
-	emu.mapper_delete(g.mapper)
+	emu.console_delete(g.emulator.console)
+	emu.mapper_delete(g.emulator.mapper)
 
 	delete(g.view.front_buffer)
 	delete(g.view.back_buffer)
+
+	delete(g.debug_ui.pattern_table_0_buffer)
+	delete(g.debug_ui.pattern_table_1_buffer)
+}
+
+emulator_is_running :: proc() -> bool {
+	s := g.emulator.state
+	return(
+		s == .Run ||
+		s == .Run_Until_Instruction ||
+		s == .Run_Until_Cycle ||
+		s == .Run_Until_Frame \
+	)
 }
 
 emulator_loop :: proc() {
-	time_stamp: time.Time
 	frame_complete, instr_complete: bool;err: Maybe(emu.Error)
+	time_stamp: time.Time
+
 	for {
 		if frame_complete do time_stamp = time.now()
 
-		if g.emulator.run {
+		switch g.emulator.state {
+		case .Run, .Run_Until_Instruction, .Run_Until_Cycle, .Run_Until_Frame:
 			frame_complete, instr_complete, err = emu.console_execute_clk_cycle(
-				g.console,
+				g.emulator.console,
 				g.view.back_buffer,
 			)
+		case .Step:
+			frame_complete, instr_complete, err = emu.console_execute_clk_cycle(
+				g.emulator.console,
+				g.view.back_buffer,
+			)
+			g.emulator.state = .Pause
+		case .Pause:
+		// do nothing
 		}
+
+		if err != nil do emu.error_log(err.?)
+
 
 		if instr_complete {
 			update_controller_input()
@@ -254,21 +310,23 @@ emulator_loop :: proc() {
 
 			g.emulator.frame_time = time.diff(time_stamp, time.now())
 		}
+
+		free_all(context.temp_allocator)
 	}
 }
 
 main_loop :: proc() {
-	monitor_num := rl.GetCurrentMonitor()
-	refresh_rate := rl.GetMonitorRefreshRate(monitor_num)
-	if refresh_rate == 0 {
-		log.warn("WARNING: Could not get monitor refresh rate, will default to 60 Hz")
-		g.view.target_refresh_rate = 60
-	} else {
-		g.view.target_refresh_rate = refresh_rate
-		log.infof("INFO: Refresh rate set to %d Hz", refresh_rate)
-	}
+	// monitor_num := rl.GetCurrentMonitor()
+	// refresh_rate := rl.GetMonitorRefreshRate(monitor_num)
+	// if refresh_rate == 0 {
+	// 	log.warn("WARNING: Could not get monitor refresh rate, will default to 60 Hz")
+	// 	g.view.target_refresh_rate = 60
+	// } else {
+	// 	g.view.target_refresh_rate = refresh_rate
+	// 	log.infof("INFO: Refresh rate set to %d Hz", refresh_rate)
+	// }
 
-	rl.SetTargetFPS(refresh_rate)
+	// rl.SetTargetFPS(refresh_rate)
 
 	for !rl.WindowShouldClose() {
 		if rl.IsKeyPressed(.F3) do g.debug_ui.show = !g.debug_ui.show
@@ -278,7 +336,7 @@ main_loop :: proc() {
 		}
 
 		rl.BeginDrawing()
-		rl.ClearBackground(rl.BLACK)
+		// rl.ClearBackground(rl.BLACK)
 
 		if !g.debug_ui.show {
 			rl.DrawTexturePro(
@@ -361,7 +419,7 @@ update_controller_input :: proc() {
 		if rl.IsGamepadButtonDown(0, .MIDDLE_RIGHT) do buttons += {.start}
 	}
 
-	emu.controller_set_buttons(&g.console.controller1, buttons)
+	emu.controller_set_buttons(&g.emulator.console.controller1, buttons)
 }
 
 init_debug_ui :: proc() {
@@ -393,12 +451,12 @@ init_debug_ui :: proc() {
 }
 
 render_debug_ui :: proc() {
-	@(static) show_game_view := true
-	@(static) show_log := true
-	@(static) show_pattern_tables: bool = false
-	@(static) show_console_state: bool = true
-	@(static) show_palettes: bool = false
-	@(static) show_oam: bool = false
+	@(static) show_game_view: bool = true
+	@(static) show_log: bool = true
+	@(static) show_pattern_tables: bool
+	@(static) show_console_state: bool
+	@(static) show_palettes: bool
+	@(static) show_oam: bool
 
 	imgui.DockSpaceOverViewport(g.debug_ui.dockspace_id)
 
@@ -418,6 +476,67 @@ render_debug_ui :: proc() {
 		}
 
 		if imgui.BeginMenu("Control") {
+			if emulator_is_running() {
+				if imgui.MenuItem("Pause") {
+					g.emulator.state = .Pause
+					log.info("INFO: Pause emulator")
+				}
+			} else {
+				if imgui.MenuItem("Run") {
+					g.emulator.state = .Run
+					log.info("INFO: Run emulator")
+				}
+			}
+
+			if imgui.MenuItem("Step", enabled = !emulator_is_running()) {
+				g.emulator.state = .Step
+				log.info("INFO: Step emulator")
+			}
+
+			if imgui.MenuItem("Reset", enabled = !emulator_is_running()) {
+				slice.fill(g.view.front_buffer, 0x0)
+				_ = emu.console_reset(g.emulator.console)
+				log.info("INFO: Reset emulator")
+			}
+
+			// @note if reloading console while running the emulation thread
+			// might try to access freed memory, therefore must ensure that
+			// emulation is paused
+			if imgui.MenuItem("Reload ROM", enabled = !emulator_is_running()) {
+				slice.fill(g.view.front_buffer, 0x0)
+
+				rom, err := os.read_entire_file_or_err(g.rom_file_path)
+				if err != nil {
+					log.errorf("ERROR: could not open file '%s', %v", g.rom_file_path, err)
+					os.exit(1)
+				}
+				defer delete(rom)
+
+				if ok := emu.ines_is_nes_file_format(rom); !ok {
+					log.errorf("ERROR: file '%s' is not in iNES format", g.rom_file_path)
+					os.exit(1)
+				}
+
+
+				// Initialize console and mapper
+				ines := emu.get_ines_from_bytes(rom)
+
+				if err := emu.console_vet_ines(ines); err != nil {
+					emu.error_log(err.?)
+					os.exit(1)
+				}
+
+				emu.console_delete(g.emulator.console)
+				emu.mapper_delete(g.emulator.mapper)
+				g.emulator.console = emu.console_make()
+				g.emulator.mapper = emu.mapper_make_from_ines(ines)
+
+				emu.console_initialize_with_mapper(g.emulator.console, g.emulator.mapper)
+				_ = emu.console_reset(g.emulator.console)
+
+				log.infof("INFO: Reload emulator from ROM '%s'", g.rom_file_path)
+			}
+
 			imgui.EndMenu()
 		}
 
@@ -443,7 +562,7 @@ render_debug_ui :: proc() {
 						imgui.CloseCurrentPopup()
 					}
 
-					if imgui.RadioButton("Fill Space", scaling_mode == .Fill_Space) {
+					if imgui.RadioButton("Fill Window", scaling_mode == .Fill_Space) {
 						scaling_mode = .Fill_Space
 						log.infof("changed game window scaling mode to %v", scaling_mode)
 						imgui.CloseCurrentPopup()
@@ -482,7 +601,7 @@ render_debug_ui :: proc() {
 	}
 
 	if show_log {
-		@(static) wrap_text := true
+		@(static) wrap_text := false
 		@(static) enable_auto_scroll := true
 
 		if imgui.Begin("Log", &show_log, {.MenuBar, .NoScrollbar}) {
@@ -494,7 +613,9 @@ render_debug_ui :: proc() {
 				imgui.Checkbox("Wrap Text", &wrap_text)
 
 				if imgui.Button("Clear") {
-					imgui.TextBuffer_clear(&g.debug_ui.text_buf)
+					if sync.mutex_guard(&g.debug_ui.log_mutex) {
+						imgui.TextBuffer_clear(&g.debug_ui.log_buf)
+					}
 					imgui.SetScrollHereY(1)
 				}
 
@@ -506,8 +627,10 @@ render_debug_ui :: proc() {
 				imgui.EndMenuBar()
 			}
 
-
-			str := imgui.TextBuffer_begin(&g.debug_ui.text_buf)
+			str: cstring
+			if sync.mutex_guard(&g.debug_ui.log_mutex) {
+				str = imgui.TextBuffer_begin(&g.debug_ui.log_buf)
+			}
 
 			if wrap_text do imgui.TextWrapped("%s", str)
 			else do imgui.TextUnformatted(str)
@@ -520,11 +643,8 @@ render_debug_ui :: proc() {
 			}
 
 			if enable_auto_scroll &&
-			   (utils.imgui_logger_get_scroll_to_bottom(g.debug_ui.logger) ||
-					   imgui.GetScrollY() >=
-						   imgui.GetScrollMaxY() - imgui.GetStyle().ScrollbarSize) {
+			   imgui.GetScrollY() >= imgui.GetScrollMaxY() - imgui.GetStyle().ScrollbarSize {
 				imgui.SetScrollHereY(1)
-				utils.imgui_logger_set_scroll_to_bottom(&g.debug_ui.logger, false)
 			}
 
 			if enable_auto_scroll &&
@@ -537,18 +657,78 @@ render_debug_ui :: proc() {
 	}
 
 	if show_palettes {
-		imgui.Begin("Palettes", &show_palettes)
+		imgui.Begin("Palette Table View", &show_palettes, {.MenuBar})
+
+		@(static) orientation: enum {
+			Vertical,
+			Horizontal,
+		} = .Horizontal
+
+		if imgui.BeginMenuBar() {
+			if imgui.BeginMenu("Orientation") {
+				if imgui.RadioButton("Vertical", orientation == .Vertical) {
+					orientation = .Vertical
+					imgui.CloseCurrentPopup()
+				}
+
+				if imgui.RadioButton("Horizontal", orientation == .Horizontal) {
+					orientation = .Horizontal
+					imgui.CloseCurrentPopup()
+				}
+
+				imgui.EndMenu()
+			}
+
+			imgui.EndMenuBar()
+		}
+
+
 		draw_list := imgui.GetWindowDrawList()
 		pos := imgui.GetWindowPos()
-		pos.y += 30
-		size: f32 = 20
-		for j in 0 ..< 8 {
-			for i in 0 ..< 4 {
+		w := imgui.GetCurrentWindow()
+		padding_y := w.TitleBarHeight + w.MenuBarHeight
+
+		v_num, h_num: f32
+
+		palettes: f32 = 8
+		colors_per_palette: f32 = 4
+		ratio := palettes / colors_per_palette
+
+		if orientation == .Vertical {
+			v_num = palettes
+			h_num = colors_per_palette
+		} else {
+			v_num = colors_per_palette
+			h_num = palettes
+		}
+
+		box_height := (w.Size.y - padding_y) / v_num
+		box_width := w.Size.x / h_num
+		box_size := math.min(box_height, box_width)
+
+		if box_height > box_width {
+			pos.y += (w.Size.y - padding_y - (box_width * v_num)) / 2 + padding_y
+		} else {
+			pos.y += padding_y
+			pos.x += (w.Size.x - (box_height * h_num)) / 2
+		}
+
+		for j in 0 ..< v_num {
+			for i in 0 ..< h_num {
+				pal, idx: int
+				if orientation == .Vertical {
+					pal = int(j)
+					idx = int(i)
+				} else {
+					idx = int(i) % int(colors_per_palette)
+					pal = int(j) * int(ratio) + (i >= colors_per_palette ? 1 : 0)
+				}
+
 				imgui.DrawList_AddRectFilled(
 					draw_list,
-					{pos.x + f32(i) * size, (pos.y + f32(j) * size)},
-					{pos.x + (f32(i) + 1) * size, pos.y + (f32(j) + 1) * size},
-					get_palette_color(j, i),
+					{pos.x + f32(i) * box_size, (pos.y + f32(j) * box_size)},
+					{pos.x + (f32(i) + 1) * box_size, pos.y + (f32(j) + 1) * box_size},
+					get_palette_color(pal, idx),
 				)
 			}
 		}
@@ -556,25 +736,164 @@ render_debug_ui :: proc() {
 	}
 
 	if show_oam {
-		imgui.Begin("OAM", &show_oam)
-		for sprite in g.console.ppu.oam.sprites {
-			imgui.Text(
+		@(static) wrap_text := false
+
+		imgui.Begin("Object Attribute Memory View", &show_oam, {.MenuBar})
+
+		@(static) align: enum {
+			Left,
+			Middle,
+		} = .Middle
+
+		if imgui.BeginMenuBar() {
+			if imgui.BeginMenu("Alignment") {
+				if imgui.RadioButton("Left", align == .Left) {
+					align = .Left
+					imgui.CloseCurrentPopup()
+				}
+
+				if imgui.RadioButton("Middle", align == .Middle) {
+					align = .Middle
+					imgui.CloseCurrentPopup()
+				}
+
+				imgui.EndMenu()
+			}
+
+			imgui.Checkbox("Wrap Text", &wrap_text)
+
+			imgui.EndMenuBar()
+		}
+
+		for sprite in g.emulator.console.ppu.oam.sprites {
+			cstr := fmt.ctprintf(
 				"(%03d, %03d), ID: %03d, PAL: %d, PRI: %d, HFLIP: %d, VFLIP: %d",
 				sprite.x_pos,
 				sprite.y_pos,
 				sprite.tile_index,
 				sprite.attributes.palette_index,
 				sprite.attributes.priority,
-				sprite.attributes.flip_horizontally,
-				sprite.attributes.flip_vertically,
+				sprite.attributes.flip_horizontally ? 1 : 0,
+				sprite.attributes.flip_vertically ? 1 : 0,
 			)
+
+			if align == .Middle {
+				w := imgui.GetCurrentWindow()
+				text_size := imgui.CalcTextSize(cstr)
+				x := (w.Size.x - text_size.x) / 2
+				imgui.SetCursorPosX(x)
+			}
+
+			if wrap_text do imgui.TextWrapped("%s", cstr)
+			else do imgui.TextUnformatted(cstr)
 		}
 
 		imgui.End()
 	}
 
+	if show_pattern_tables {
+		imgui.PushStyleVarImVec2(imgui.StyleVar.WindowPadding, {})
+		defer imgui.PopStyleVar()
+
+		imgui.Begin("Pattern Table View", &show_pattern_tables, {.MenuBar})
+
+		@(static) orientation: enum {
+			Vertical,
+			Horizontal,
+		} = .Horizontal
+
+		if imgui.BeginMenuBar() {
+			if imgui.BeginMenu("Orientation") {
+				if imgui.RadioButton("Vertical", orientation == .Vertical) {
+					orientation = .Vertical
+					imgui.CloseCurrentPopup()
+				}
+
+				if imgui.RadioButton("Horizontal", orientation == .Horizontal) {
+					orientation = .Horizontal
+					imgui.CloseCurrentPopup()
+				}
+
+				imgui.EndMenu()
+			}
+
+			imgui.EndMenuBar()
+		}
+
+		emu.ppu_pattern_table_palette_offset_to_buffer(
+			g.emulator.console,
+			g.debug_ui.pattern_table_0_buffer,
+			0,
+		)
+		emu.ppu_pattern_table_palette_offset_to_buffer(
+			g.emulator.console,
+			g.debug_ui.pattern_table_1_buffer,
+			1,
+		)
+
+
+		for &val in g.debug_ui.pattern_table_0_buffer {
+			if val == 0 do continue
+			val = 0xffffffff
+		}
+
+		for &val in g.debug_ui.pattern_table_1_buffer {
+			if val == 0 do continue
+			val = 0xffffffff
+		}
+
+		rl.UpdateTexture(
+			g.debug_ui.pattern_table_0_texture,
+			raw_data(g.debug_ui.pattern_table_0_buffer),
+		)
+		rl.UpdateTexture(
+			g.debug_ui.pattern_table_1_texture,
+			raw_data(g.debug_ui.pattern_table_1_buffer),
+		)
+
+		offset: imgui.Vec2
+		w := imgui.GetCurrentWindow()
+		padding_y := w.TitleBarHeight + w.MenuBarHeight
+
+		v_num, h_num: f32
+
+		if orientation == .Vertical {
+			v_num = 2
+			h_num = 1
+		} else {
+			v_num = 1
+			h_num = 2
+		}
+
+		box_height := (w.Size.y - padding_y) / v_num
+		box_width := w.Size.x / h_num
+		box_size := math.min(box_height, box_width)
+
+		if box_height > box_width {
+			offset.y = (w.Size.y - padding_y - (box_width * v_num)) / 2 + padding_y
+		} else {
+			offset.y = padding_y
+			offset.x = (w.Size.x - (box_height * h_num)) / 2
+		}
+
+		size: imgui.Vec2 = {box_size, box_size}
+		imgui.SetCursorPos(offset)
+		rlimgui.image_size(&g.debug_ui.pattern_table_0_texture, size)
+
+		if orientation == .Horizontal {
+			imgui.SameLine()
+		} else {
+			offset.y += box_size
+			imgui.SetCursorPos(offset)
+		}
+
+		rlimgui.image_size(&g.debug_ui.pattern_table_1_texture, size)
+
+		imgui.End()
+	}
+
 	get_palette_color :: proc(#any_int palette_index, offset: uint) -> u32 {
-		c := emu.ppu_get_color_from_palette(g.console, palette_index, offset)
+		c := emu.ppu_get_color_from_palette(g.emulator.console, palette_index, offset)
 		return transmute(u32)c
 	}
 }
