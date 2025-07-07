@@ -113,9 +113,10 @@ main :: proc() {
 	g.multi_logger = log.create_multi_logger(console_logger, g.debug_ui.logger)
 	context.logger = g.multi_logger
 
-	thread.create_and_start(emulator_loop, context, .High, true)
+	th := thread.create_and_start(emulator_loop, context, .High)
 	main_loop()
 
+	thread.terminate(th, 0)
 	shutdown()
 
 	return

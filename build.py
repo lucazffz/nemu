@@ -59,13 +59,13 @@ odin_build_flags = (
 
 # Create build dir if not exists
 if not os.path.exists(build_dir_path):
-    print("--- Create build directory at '{path}'".format(path=build_dir_path))
+    print("--- Created build directory at '{path}'".format(path=build_dir_path))
     os.mkdir(build_dir_path)
 
-# Build project
+# Compile project
 # @note should probably use subprocess.run instead but couldnt
 # get that to work with odin compiler
-print("--- Building...")
+print("--- Compiling...")
 status = os.system("odin build src " + odin_build_flags)
 if status != 0:
     print("ERROR: Could not create executable")
