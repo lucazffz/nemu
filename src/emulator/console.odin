@@ -3,7 +3,6 @@ package emulator
 import "../utils"
 import "base:runtime"
 import "core:fmt"
-import "core:log"
 import "core:slice"
 import "core:strings"
 
@@ -46,7 +45,7 @@ console_make :: proc(
 ) #optional_allocator_error {
 	// dont check error, know that intervals are closed
 	ppu_palette_size := utils.interval_size(PPU_PALLETTE_RAM_INTERVAL)
-	ppu_oam_size := utils.interval_size(PPU_OAM_INTERVAL)
+	// ppu_oam_size := utils.interval_size(PPU_OAM_INTERVAL)
 	cpu_ram_size := utils.interval_size(CPU_RAM_INTERVAL)
 	ppu_vram_size := utils.interval_size(PPU_VRAM_INTERVAL)
 
@@ -57,7 +56,7 @@ console_make :: proc(
 	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
 	// console.ppu.oam.raw_data = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
 	console.ppu.vram = make_slice([]u8, ppu_vram_size, allocator, loc) or_return
-	console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
+	// console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
 	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
 
 	return
@@ -74,7 +73,7 @@ console_delete :: proc(
 	delete_slice(console.ppu.palette, allocator, loc) or_return
 	delete_slice(console.ppu.vram, allocator, loc) or_return
 	// delete_slice(console.ppu.pixel_buffer, allocator, loc) or_return
-	free(console) or_return
+	free(console, allocator, loc) or_return
 	return .None
 }
 
@@ -82,18 +81,22 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 	console.cpu.pc = address
 }
 
+// will touch all fields so can be used to reinitialize an existing console
 console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
-	// @note must reassign memory pointers if want to intialize new cpu and ppu
-	// in console, do like this instead:
-	console.cpu.sp = 0xfd
-	console.cpu.pc = 0xc000
-	console.cpu.status = {.IF}
-	console.cpu.instruction_count = 0
+	c: Console
 
-	// vblank and sprite overflow often set after power-up
-	// console.ppu.mmio_register_bank.ppustatus._unused = 0x10
+	c.cpu.sp = 0xfd
+	c.cpu.pc = 0xc000
+	c.cpu.status = {.IF}
 
-	console.mapper = mapper
+	// assign slices
+	c.ram = console.ram
+	c.ppu.vram = console.ppu.vram
+	c.ppu.palette = console.ppu.palette
+
+	c.mapper = mapper
+
+	console^ = c
 }
 
 console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
@@ -108,7 +111,7 @@ console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
 	if ines.header.tv_system != .NTSC {
 		return errorf(
 			.TV_System_Not_Supported,
-			"TV system %v is not supported, will assume NTSC",
+			"TV system %v is not supported",
 			ines.header.tv_system,
 		)
 	}
@@ -124,7 +127,7 @@ console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
 	if ines.header.cpu_ppu_timing_mode != .RP2C02 {
 		return errorf(
 			.CPU_PPU_Timing_Mode_Not_Supported,
-			"timing mode %v is not supported, will assume RP2C02",
+			"timing mode %v is not supported",
 			ines.header.cpu_ppu_timing_mode,
 		)
 	}
@@ -134,13 +137,14 @@ console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
 
 console_execute_clk_cycle :: proc(
 	console: ^Console,
+	pixel_buffer: Maybe([]Color),
 ) -> (
 	frame_complete: bool,
 	cpu_complete: bool,
 	err: Maybe(Error),
 ) {
 
-	frame_complete = ppu_execute_clk_cycle(console)
+	frame_complete = ppu_execute_clk_cycle(console, pixel_buffer)
 
 	if console.cycle_count % 3 == 0 {
 		if console.cpu.dma_transfer {
@@ -179,7 +183,7 @@ console_reset :: proc(console: ^Console) -> Maybe(Error) {
 	console.cpu.interrupt = .Reset
 	complete: bool
 	for !complete {
-		_, complete = console_execute_clk_cycle(console) or_return
+		_, complete = console_execute_clk_cycle(console, nil) or_return
 
 	}
 

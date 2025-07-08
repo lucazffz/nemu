@@ -1,10 +1,7 @@
 package emulator
 
-import "../utils"
 import "base:runtime"
 import "core:fmt"
-import "core:log"
-import "core:slice"
 
 Mapper :: union {
 	Mapper0,
@@ -101,13 +98,13 @@ mapper_read_from_ppu_address_space :: proc(
 	data: u8,
 	err: Maybe(Error),
 ) {
-	address := address & 0x3fff
-	switch address {
+	addr := address & 0x3fff
+	switch addr {
 	case 0x0000 ..< 0x2000:
 		// pattern tables 0 and 1
 		switch m in console.mapper {
 		case Mapper0:
-			data = m.chr_rom[address]
+			data = m.chr_rom[addr]
 		case:
 			panic(fmt.tprintf("mapper type %v not supported", m))
 		}
@@ -119,18 +116,18 @@ mapper_read_from_ppu_address_space :: proc(
 		case Mapper0:
 			if m.nametable_arrangement == .Vertical {
 				// vertical arrangement gives horizontal mirroring
-				address := get_nametable_mirror_address(address, .Horizontal)
-				data = console.ppu.vram[address - 0x2000]
+				addr = get_nametable_mirror_address(addr, .Horizontal)
+				data = console.ppu.vram[addr - 0x2000]
 			} else {
 				// horizontal arrangement gives vertical mirroring
-				address := get_nametable_mirror_address(address, .Vertical)
-				data = console.ppu.vram[address - 0x2000]
+				addr = get_nametable_mirror_address(addr, .Vertical)
+				data = console.ppu.vram[addr - 0x2000]
 			}
 		case:
 			panic(fmt.tprintf("mapper type %v not supported", m))
 		}
 	case:
-		err = errorf(.Invalid_Address, "cannot read from $%04X", address)
+		err = errorf(.Invalid_Address, "cannot read from $%04X", addr)
 	}
 
 	return
@@ -144,8 +141,8 @@ mapper_write_to_ppu_address_space :: proc(
 ) -> (
 	err: Maybe(Error),
 ) {
-	address := address & 0x3fff
-	switch address {
+	addr := address & 0x3fff
+	switch addr {
 	case 0x0000 ..< 0x2000:
 		// pattern tables 0 and 1
 		switch m in console.mapper {
@@ -154,7 +151,7 @@ mapper_write_to_ppu_address_space :: proc(
 				.Read_Only,
 				"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
 				data,
-				address,
+				addr,
 				severity = .Warning,
 			)
 		case:
@@ -169,12 +166,12 @@ mapper_write_to_ppu_address_space :: proc(
 			// log.debugf("addr: %04X, val: %d", address, data)
 			if m.nametable_arrangement == .Vertical {
 				// vertical arrangement gives horizontal mirroring
-				address := get_nametable_mirror_address(address, .Horizontal)
-				console.ppu.vram[address - 0x2000] = data
+				addr = get_nametable_mirror_address(addr, .Horizontal)
+				console.ppu.vram[addr - 0x2000] = data
 			} else {
 				// horizontal arrangement gives vertical mirroring
-				address := get_nametable_mirror_address(address, .Vertical)
-				console.ppu.vram[address - 0x2000] = data
+				addr = get_nametable_mirror_address(addr, .Vertical)
+				console.ppu.vram[addr - 0x2000] = data
 			}
 		case:
 			panic(fmt.tprintf("mapper type %v not supported", m))
@@ -184,7 +181,7 @@ mapper_write_to_ppu_address_space :: proc(
 			.Invalid_Address,
 			"cannot write '%02X' to $%04X",
 			data,
-			address,
+			addr,
 			severity = .Warning,
 		)
 	}
@@ -205,11 +202,11 @@ mapper_read_from_cpu_address_space :: proc(
 		switch address {
 		case 0x6000 ..< 0x8000:
 			if m.prg_ram_size_bytes == 2 * 1024 {
-				address := address & 0x7ff
-				data = m.prg_ram[address]
+				addr := address & 0x7ff
+				data = m.prg_ram[addr]
 			} else if m.prg_ram_size_bytes == 4 * 1024 {
-				address := address & 0xfff
-				data = m.prg_ram[address]
+				addr := address & 0xfff
+				data = m.prg_ram[addr]
 			} else {
 				err = errorf(
 					.Unallocated_Memory,
@@ -248,11 +245,11 @@ mapper_write_to_cpu_address_space :: proc(
 		switch address {
 		case 0x6000 ..< 0x8000:
 			if m.prg_ram_size_bytes == 2 * 1024 {
-				address := address & 0x7ff
-				m.prg_ram[address] = data
+				addr := address & 0x7ff
+				m.prg_ram[addr] = data
 			} else if m.prg_ram_size_bytes == 4 * 1024 {
-				address := address & 0xfff
-				m.prg_ram[address] = data
+				addr := address & 0xfff
+				m.prg_ram[addr] = data
 			} else {
 				err = errorf(
 					.Unallocated_Memory,
@@ -297,23 +294,23 @@ Nametable_Mirroring_Type :: enum {
 
 @(private = "file")
 get_nametable_mirror_address :: proc(address: u16, mirroring: Nametable_Mirroring_Type) -> u16 {
-	address := address & 0x3fff // keep lower 14 bits
+	addr := address & 0x3fff // keep lower 14 bits
 
 	// handle mirroring of entire nametable region ($3000-$3eff) to
 	// primary nametable region ($2000-$2fff)
-	if address >= 0x3000 && address <= 0x3eff {
-		address -= 0x1000
+	if addr >= 0x3000 && addr <= 0x3eff {
+		addr -= 0x1000
 	}
 
 	// not within nametable region, return masked address
-	if !(address >= 0x2000 && address <= 0x2fff) do return address
+	if !(addr >= 0x2000 && addr <= 0x2fff) do return addr
 	// determine which logical nametable the address falls into
 	// each nametable is 1KB
 	// 0x000-0x3FF -> NT0
 	// 0x400-0x7FF -> NT1
 	// 0x800-0xBFF -> NT2
 	// 0xC00-0xFFF -> NT3
-	offset := address - 0x2000
+	offset := addr - 0x2000
 	nametable_bank := offset / 1024
 	bank_offset := offset % 1024
 
@@ -342,9 +339,9 @@ get_nametable_mirror_address :: proc(address: u16, mirroring: Nametable_Mirrorin
 		return 0x2400 + bank_offset
 	case .Four_Screen:
 		// no mirroring, all 4 logical nametables are distinct
-		return address
+		return addr
 	}
 
-	return address
+	return addr
 }
 

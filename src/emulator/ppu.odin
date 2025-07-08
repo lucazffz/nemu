@@ -1,7 +1,6 @@
 package emulator
 
 import "core:fmt"
-import "core:log"
 import "core:slice"
 
 Color :: distinct [4]u8
@@ -95,7 +94,7 @@ PPU :: struct {
 	frame_count:                u64,
 	cycle:                      int,
 	scanline:                   int,
-	pixel_buffer:               []Color,
+	// pixel_buffer:               []Color,
 	cycle_count:                int,
 	bg_next_tile_id:            u8,
 	bg_next_tile_attribute:     u8,
@@ -293,22 +292,22 @@ ppu_oam_write_to_address :: proc(ppu: ^PPU, data: u8, address: u8) {
 
 @(require_results)
 ppu_write_to_address :: proc(console: ^Console, data: u8, address: u16) -> Maybe(Error) {
-	address := address & 0x3fff
-	switch address {
+	addr := address & 0x3fff
+	switch addr {
 	case 0x0000 ..< 0x3f00:
-		mapper_write_to_ppu_address_space(console, data, address) or_return
+		mapper_write_to_ppu_address_space(console, data, addr) or_return
 	case 0x3f00 ..= 0x3fff:
 		// palette RAM (32 bytes)
-		address := address & 0x001f
+		addr = addr & 0x001f
 		// palette offset 0 is shared between
 		// background and sprites so mirror addresses
-		if address == 0x0010 do address = 0x0000
-		if address == 0x0014 do address = 0x0004
-		if address == 0x0018 do address = 0x0008
-		if address == 0x001c do address = 0x000c
-		console.ppu.palette[address] = data
+		if addr == 0x0010 do addr = 0x0000
+		if addr == 0x0014 do addr = 0x0004
+		if addr == 0x0018 do addr = 0x0008
+		if addr == 0x001c do addr = 0x000c
+		console.ppu.palette[addr] = data
 	case:
-		panic(fmt.tprintf("invalid address $%04X", address))
+		panic(fmt.tprintf("invalid address $%04X", addr))
 	}
 
 	return nil
@@ -316,26 +315,26 @@ ppu_write_to_address :: proc(console: ^Console, data: u8, address: u16) -> Maybe
 
 @(require_results)
 ppu_read_from_address :: proc(console: ^Console, address: u16) -> u8 {
-	address := address & 0x3fff
-	switch address {
+	addr := address & 0x3fff
+	switch addr {
 	case 0x0000 ..< 0x3f00:
 		// cannot return error here since we know that the address is
 		// within $0000-$3EFF
-		data, err := mapper_read_from_ppu_address_space(console, address)
+		data, err := mapper_read_from_ppu_address_space(console, addr)
 		assert(err == nil, "should never give an error here")
 		return data
 	case 0x3f00 ..= 0x3fff:
 		// palette RAM (32 bytes)
-		address := address & 0x001f
+		addr = addr & 0x001f
 		// palette offset 0 is shared between
 		// background and sprites so mirror
-		if address == 0x0010 do address = 0x0000
-		if address == 0x0014 do address = 0x0004
-		if address == 0x0018 do address = 0x0008
-		if address == 0x001c do address = 0x000c
-		return console.ppu.palette[address]
+		if addr == 0x0010 do addr = 0x0000
+		if addr == 0x0014 do addr = 0x0004
+		if addr == 0x0018 do addr = 0x0008
+		if addr == 0x001c do addr = 0x000c
+		return console.ppu.palette[addr]
 	case:
-		panic(fmt.tprintf("invalid address $%04X", address))
+		panic(fmt.tprintf("invalid address $%04X", addr))
 	}
 }
 
@@ -351,12 +350,9 @@ ppu_increment_loopy_register :: proc(reg: ^Loopy_Register, vertical_increment: b
 
 ppu_pattern_table_palette_offset_to_buffer :: proc(
 	console: ^Console,
-	buffer: []uint,
-	table_index: uint,
+	buffer: []u32,
+	table_index: int,
 ) {
-	ppu := console.ppu
-	table_index := int(table_index) // avoid a whole bunch of type conversions 
-
 	// each tile in a pattern table is 16 bytes (consistsof 8x8 pixels of 2 bits each)
 	// each pattern table contain 16x16 tiles so each row is 256 bytes
 	// the entire pattern table size is 4KB
@@ -379,7 +375,7 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 					tile_lsb >>= 1;tile_msb >>= 1
 					x := ntile_x * 8 + (7 - col)
 					y := ntile_y * 8 + row
-					buffer[y * 128 + x] = uint(pixel_palette_offset)
+					buffer[y * 128 + x] = u32(pixel_palette_offset)
 				}
 			}
 		}
@@ -401,7 +397,12 @@ ppu_get_color_from_palette :: proc(console: ^Console, palette_index, offset: uin
 }
 
 @(require_results)
-ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
+ppu_execute_clk_cycle :: proc(
+	console: ^Console,
+	pixel_buffer: Maybe([]Color),
+) -> (
+	frame_complete: bool,
+) {
 	// the ppu will continue execution even when encountering read errors and
 	// simply cascade them to the caller as warnings
 
@@ -717,10 +718,11 @@ ppu_execute_clk_cycle :: proc(console: ^Console) -> (frame_complete: bool) {
 		}
 	}
 
-	if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
-		c := ppu_get_color_from_palette(console, palette, pixel)
-		// c.a = 0xff
-		ppu.pixel_buffer[ppu.scanline * 256 + ppu.cycle] = c
+	if buffer, ok := pixel_buffer.?; ok {
+		if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
+			c := ppu_get_color_from_palette(console, palette, pixel)
+			buffer[ppu.scanline * 256 + ppu.cycle] = c
+		}
 	}
 
 	ppu.cycle += 1
