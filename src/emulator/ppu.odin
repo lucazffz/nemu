@@ -79,7 +79,7 @@ PPU :: struct {
 	// },
 	// pattern_table:         []u8,
 	// nametable:             []u8,
-	vram:                       []u8,
+	// vram:                       []u8,
 	oam:                        struct #raw_union {
 		sprites:  [64]Sprite,
 		raw_data: [256]u8,
@@ -295,7 +295,7 @@ ppu_write_to_address :: proc(console: ^Console, data: u8, address: u16) -> Maybe
 	addr := address & 0x3fff
 	switch addr {
 	case 0x0000 ..< 0x3f00:
-		mapper_write_to_ppu_address_space(console, data, addr) or_return
+		cartridge_write_to_ppu_address(console.cartridge, data, addr) or_return
 	case 0x3f00 ..= 0x3fff:
 		// palette RAM (32 bytes)
 		addr = addr & 0x001f
@@ -320,7 +320,7 @@ ppu_read_from_address :: proc(console: ^Console, address: u16) -> u8 {
 	case 0x0000 ..< 0x3f00:
 		// cannot return error here since we know that the address is
 		// within $0000-$3EFF
-		data, err := mapper_read_from_ppu_address_space(console, addr)
+		data, err := cartridge_read_from_ppu_address(console.cartridge, addr)
 		assert(err == nil, "should never give an error here")
 		return data
 	case 0x3f00 ..= 0x3fff:

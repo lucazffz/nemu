@@ -55,7 +55,6 @@ g: struct #no_copy {
 		state:             Emulation_State,
 		run_count:         i32,
 		console:           ^emu.Console,
-		mapper:            emu.Mapper,
 		frame_mutex:       sync.Mutex,
 		frame_time:        time.Duration,
 		target_frame_time: time.Duration,
@@ -175,9 +174,9 @@ initialize :: proc() {
 	}
 
 	g.emulator.console = emu.console_make()
-	g.emulator.mapper = emu.mapper_make_from_ines(ines)
+	cartridge := emu.cartridge_make_from_ines(ines)
 
-	emu.console_initialize_with_mapper(g.emulator.console, g.emulator.mapper)
+	emu.console_initialize_with_cartridge(g.emulator.console, cartridge)
 	_ = emu.console_reset(g.emulator.console)
 
 	g.emulator.target_frame_time = time.Second / 60
@@ -257,7 +256,7 @@ shutdown :: proc() {
 	rl.CloseWindow()
 
 	emu.console_delete(g.emulator.console)
-	emu.mapper_delete(g.emulator.mapper)
+	// emu.mapper_delete(g.emulator.mapper)
 
 	delete(g.view.front_buffer)
 	delete(g.view.back_buffer)
@@ -624,40 +623,40 @@ render_debug_ui :: proc() {
 			// @note if reloading console while running the emulation thread
 			// might try to access freed memory, therefore must ensure that
 			// emulation is paused
-			if imgui.MenuItem("Reload ROM", enabled = !emulator_is_running()) {
-				slice.fill(g.view.front_buffer, 0x0)
+			// if imgui.MenuItem("Reload ROM", enabled = !emulator_is_running()) {
+			// slice.fill(g.view.front_buffer, 0x0)
 
-				rom, err := os.read_entire_file_or_err(g.rom_file_path)
-				if err != nil {
-					log.errorf("ERROR: could not open file '%s', %v", g.rom_file_path, err)
-					os.exit(1)
-				}
-				defer delete(rom)
+			// rom, err := os.read_entire_file_or_err(g.rom_file_path)
+			// if err != nil {
+			// 	log.errorf("ERROR: could not open file '%s', %v", g.rom_file_path, err)
+			// 	os.exit(1)
+			// }
+			// defer delete(rom)
 
-				if ok := emu.ines_is_nes_file_format(rom); !ok {
-					log.errorf("ERROR: file '%s' is not in iNES format", g.rom_file_path)
-					os.exit(1)
-				}
+			// if ok := emu.ines_is_nes_file_format(rom); !ok {
+			// 	log.errorf("ERROR: file '%s' is not in iNES format", g.rom_file_path)
+			// 	os.exit(1)
+			// }
 
 
-				// Initialize console and mapper
-				ines := emu.get_ines_from_bytes(rom)
+			// // Initialize console and mapper
+			// ines := emu.get_ines_from_bytes(rom)
 
-				if err := emu.console_vet_ines(ines); err != nil {
-					emu.error_log(err.?)
-					os.exit(1)
-				}
+			// if err := emu.console_vet_ines(ines); err != nil {
+			// 	emu.error_log(err.?)
+			// 	os.exit(1)
+			// }
 
-				emu.console_delete(g.emulator.console)
-				emu.mapper_delete(g.emulator.mapper)
-				g.emulator.console = emu.console_make()
-				g.emulator.mapper = emu.mapper_make_from_ines(ines)
+			// // emu.console_delete(g.emulator.console)
+			// // emu.mapper_delete(g.emulator.mapper)
+			// // g.emulator.console = emu.console_make()
+			// // g.emulator.mapper = emu.mapper_make_from_ines(ines)
 
-				emu.console_initialize_with_mapper(g.emulator.console, g.emulator.mapper)
-				_ = emu.console_reset(g.emulator.console)
+			// // emu.console_initialize_with_mapper(g.emulator.console, g.emulator.mapper)
+			// _ = emu.console_reset(g.emulator.console)
 
-				log.infof("INFO: Reload emulator from ROM '%s'", g.rom_file_path)
-			}
+			// log.infof("INFO: Reload emulator from ROM '%s'", g.rom_file_path)
+			// }
 
 			imgui.EndMenu()
 		}

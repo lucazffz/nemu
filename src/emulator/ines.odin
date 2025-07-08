@@ -4,10 +4,11 @@ import "core:slice"
 
 iNES20 :: struct {
 	header:  struct {
-		prg_rom_size:                 int, // 16 KB units
+		// all sizes are in units of bytes
+		prg_rom_size:                 int,
 		prg_ram_size:                 int,
 		prg_nvram_size:               int,
-		chr_rom_size:                 int, // 8 KB units
+		chr_rom_size:                 int,
 		chr_ram_size:                 int,
 		chr_nvram_size:               int,
 		mapper_number:                int,
@@ -65,8 +66,8 @@ iNES_NES_FILE_VARIANT :: enum {
 ines_vet :: proc(ines: iNES20) -> Maybe(Error) {
 	switch ines.header.mapper_number {
 	case 0:
-		if ines.header.prg_ram_size != 2 * 1024 &&
-		   ines.header.prg_ram_size != 4 * 1024 &&
+		if ines.header.prg_ram_size != 2 * KB &&
+		   ines.header.prg_ram_size != 4 * KB &&
 		   ines.header.prg_ram_size != 0 {
 			return errorf(
 				.Invalid_PRG_RAM_Size,
@@ -75,7 +76,7 @@ ines_vet :: proc(ines: iNES20) -> Maybe(Error) {
 			)
 		}
 
-		if ines.header.prg_rom_size != 1 && ines.header.prg_rom_size != 2 {
+		if ines.header.prg_rom_size != 16 * KB && ines.header.prg_rom_size != 32 * KB {
 			return errorf(
 				.Invalid_PRG_ROM_Size,
 				"invalid PRG-ROM size of %dKB, must be either 16KB or 32KB for mapper 0",
@@ -87,7 +88,7 @@ ines_vet :: proc(ines: iNES20) -> Maybe(Error) {
 			return error(.PRG_NVRAM_Not_Supported, "PRG-NVRAM not supported for mapper 0")
 		}
 
-		if ines.header.chr_rom_size != 1 {
+		if ines.header.chr_rom_size != 8 * KB {
 			return errorf(
 				.Invalid_CHR_ROM_Size,
 				"invalid CHR-ROM size of %dKB, must be 8KB for mapper 0",
@@ -121,7 +122,7 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: iNES20, ok: bool) #optional_
 		exponent := uint(prg_rom_size_lsb & 0xfc)
 		header.prg_rom_size = (multiplier * 2 + 1) * (1 << exponent)
 	} else {
-		header.prg_rom_size = int((prg_rom_size_msb << 4) | prg_rom_size_lsb)
+		header.prg_rom_size = int((prg_rom_size_msb << 4) | prg_rom_size_lsb) * 16 * KB
 	}
 
 
@@ -134,7 +135,7 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: iNES20, ok: bool) #optional_
 		exponent := uint(chr_rom_size_lsb & 0xfc)
 		header.chr_rom_size = (multiplier * 2 + 1) * (1 << exponent)
 	} else {
-		header.chr_rom_size = int((chr_rom_size_msb << 4) | chr_rom_size_lsb)
+		header.chr_rom_size = int((chr_rom_size_msb << 4) | chr_rom_size_lsb) * 8 * KB
 	}
 
 	header.nametable_arrangement = (data[6] & 0x01) == 1 ? .Horizontal : .Vertical
@@ -185,24 +186,21 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: iNES20, ok: bool) #optional_
 	header.miscellaneous_roms_num = int(data[14] & 0x3)
 	header.default_expansion_device = int(data[15] & 0x3f)
 
-	prg_rom_size_bytes := header.prg_rom_size * 16 * 1024
-	chr_rom_size_bytes := header.chr_rom_size * 8 * 1024
-
 	// body
 	ines.header = header
 
 	// trainer_base := 16
 	// assuming no trainer area
 	prg_rom_base := 16
-	chr_rom_base := 16 + prg_rom_size_bytes
+	chr_rom_base := 16 + header.prg_rom_size
 	if header.trainer_present {
 		ines.trainer = data[16:16 + 512]
 		prg_rom_base += 512
 		chr_rom_base += 512
 	}
 
-	ines.prg_rom = data[prg_rom_base:prg_rom_base + prg_rom_size_bytes]
-	ines.chr_rom = data[chr_rom_base:chr_rom_base + chr_rom_size_bytes]
+	ines.prg_rom = data[prg_rom_base:prg_rom_base + header.prg_rom_size]
+	ines.chr_rom = data[chr_rom_base:chr_rom_base + header.chr_rom_size]
 
 	return
 }

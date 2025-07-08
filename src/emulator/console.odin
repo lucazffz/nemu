@@ -16,7 +16,8 @@ Console :: struct {
 	ram:         []u8,
 	// cycles: int,
 	// stalls: int,
-	mapper:      Mapper,
+	// mapper:      Mapper,
+	cartridge:   Cartridge,
 	cycle_count: int,
 	controller1: Controller,
 	controller2: Controller,
@@ -55,7 +56,7 @@ console_make :: proc(
 	// dont need to allocate them here
 	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
 	// console.ppu.oam.raw_data = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
-	console.ppu.vram = make_slice([]u8, ppu_vram_size, allocator, loc) or_return
+	// console.ppu.vram = make_slice([]u8, ppu_vram_size, allocator, loc) or_return
 	// console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
 	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
 
@@ -71,7 +72,9 @@ console_delete :: proc(
 	delete_slice(console.ram, allocator, loc) or_return
 	// delete_slice(console.ppu.oam.raw_data, allocator, loc) or_return
 	delete_slice(console.ppu.palette, allocator, loc) or_return
-	delete_slice(console.ppu.vram, allocator, loc) or_return
+	// delete_slice(console.ppu.vram, allocator, loc) or_return
+
+	cartridge_delete(console.cartridge)
 	// delete_slice(console.ppu.pixel_buffer, allocator, loc) or_return
 	free(console, allocator, loc) or_return
 	return .None
@@ -82,7 +85,7 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 }
 
 // will touch all fields so can be used to reinitialize an existing console
-console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
+console_initialize_with_cartridge :: proc(console: ^Console, cartridge: Cartridge) {
 	c: Console
 
 	c.cpu.sp = 0xfd
@@ -91,10 +94,10 @@ console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
 
 	// assign slices
 	c.ram = console.ram
-	c.ppu.vram = console.ppu.vram
+	// c.ppu.vram = console.ppu.vram
 	c.ppu.palette = console.ppu.palette
 
-	c.mapper = mapper
+	c.cartridge = cartridge
 
 	console^ = c
 }
@@ -219,16 +222,9 @@ console_write_to_address :: proc(
 			controller_write(&console.controller1, data)
 			controller_write(&console.controller2, data)
 		}
-	case 0x4020 ..< 0x6000:
-		// expansion ROM
-		err = errorf(
-			.Invalid_Address,
-			"cannot write to $04X, expansion ROM not supported ($4020-$5FFF)",
-			address,
-		)
-	case 0x6000 ..= 0xffff:
+	case 0x4020 ..= 0xffff:
 		// mapper
-		mapper_write_to_cpu_address_space(console.mapper, address, data) or_return
+		cartridge_write_to_cpu_address(console.cartridge, data, address) or_return
 	case:
 		panic(fmt.tprintf("invalid address $%04X", address))
 	}
@@ -264,17 +260,9 @@ console_read_from_address :: proc(
 		case 0x417:
 			data = controller_read(&console.controller2)
 		}
-
-	case 0x4020 ..< 0x6000:
-		// expansion ROM
-		err = errorf(
-			.Unallocated_Memory,
-			"cannot read from $%04X, expansion ROM not supported ($4020-$5FFF)",
-			address,
-		)
-	case 0x6000 ..= 0xffff:
+	case 0x4020 ..= 0xffff:
 		// mapper
-		data = mapper_read_from_cpu_address_space(console.mapper, address) or_return
+		data = cartridge_read_from_cpu_address(console.cartridge, address) or_return
 	case:
 		panic(fmt.tprintf("invalid address $%04X", address))
 	}
