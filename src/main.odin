@@ -47,6 +47,7 @@ g: struct #no_copy {
 	console_logger: runtime.Logger,
 	gamepad_0:      Maybe(u32),
 	gamepad_1:      Maybe(u32),
+	should_exit:    bool,
 	// Global state related to emulator
 	emulator:       struct {
 		// @note state is written to by both threads without synchronization,
@@ -281,7 +282,7 @@ emulator_loop :: proc() {
 	frame_complete, instr_complete: bool
 
 	for {
-		if emulator_is_running() && limit_frame_time {
+		if emulator_is_running() {
 			if frame_complete do time_stamp = time.now()
 		}
 
@@ -328,11 +329,13 @@ emulator_loop :: proc() {
 			limit_frame_time = false
 		}
 
-		if emulator_is_running() && limit_frame_time {
+		if emulator_is_running() {
 			if frame_complete {
-				dt := time.diff(time_stamp, time.now())
-				sleep_time := math.max(0, g.emulator.target_frame_time - dt)
-				time.sleep(sleep_time)
+				if limit_frame_time {
+					dt := time.diff(time_stamp, time.now())
+					sleep_time := math.max(0, g.emulator.target_frame_time - dt)
+					time.sleep(sleep_time)
+				}
 
 				g.emulator.frame_time = time.diff(time_stamp, time.now())
 			}
@@ -379,7 +382,7 @@ main_loop :: proc() {
 
 	// rl.SetTargetFPS(refresh_rate)
 
-	for !rl.WindowShouldClose() {
+	for !rl.WindowShouldClose() && !g.should_exit {
 		if rl.IsKeyPressed(.F3) do g.debug_ui.show = !g.debug_ui.show
 
 		critical_section: if sync.guard(&g.view.render_mutex) {
@@ -544,14 +547,30 @@ render_debug_ui :: proc() {
 	@(static) show_palettes: bool
 	@(static) show_oam: bool
 	@(static) show_break_in: bool
+	@(static) show_performance: bool
 
 	imgui.DockSpaceOverViewport(g.debug_ui.dockspace_id)
 
 	if imgui.BeginMainMenuBar() {
 		if imgui.BeginMenu("Home") {
+			if imgui.MenuItem("Performance") {
+				show_performance = true
+			}
+
+			if imgui.MenuItem("Exit") {
+				g.should_exit = true
+			}
+
 			imgui.EndMenu()
 		}
 		if imgui.BeginMenu("View") {
+			// if imgui.MenuItem("Game View") do show_game_view = true
+			// if imgui.MenuItem("Log") do show_log = true
+			// if imgui.MenuItem("Pattern Table View") do show_pattern_tables = true
+			// if imgui.MenuItem("Palette Table View") do show_palettes = true
+			// if imgui.MenuItem("CPU State View") do show_cpu_state = true
+			// if imgui.MenuItem("PPU State View") do show_ppu_state = true
+			// if imgui.MenuItem("OAM View") do show_oam = true
 			imgui.Checkbox("Game View", &show_game_view)
 			imgui.Checkbox("Log", &show_log)
 			imgui.Checkbox("Pattern Table view", &show_pattern_tables)
@@ -644,6 +663,35 @@ render_debug_ui :: proc() {
 		}
 
 		imgui.EndMainMenuBar()
+	}
+
+	if show_performance {
+		if imgui.Begin(
+			"Performance",
+			&show_performance,
+			{.AlwaysAutoResize, .NoDocking, .NoCollapse},
+		) {
+			if emulator_is_running() {
+				emulation_frame_time_ms := time.duration_milliseconds(g.emulator.frame_time)
+				imgui.Text(
+					"Emulation FPS: %03d (%.2fms)",
+					i32(1000 / emulation_frame_time_ms),
+					emulation_frame_time_ms,
+				)
+			} else {
+				imgui.Text("Emulation FPS: ---")
+			}
+
+			render_frame_time_sec := rl.GetFrameTime()
+			imgui.Text(
+				"Render FPS: %03d (%0.2fms)",
+				i32(1 / render_frame_time_sec),
+				render_frame_time_sec / 1000,
+			)
+
+			imgui.End()
+
+		}
 	}
 
 
@@ -937,32 +985,46 @@ render_debug_ui :: proc() {
 
 	if show_pattern_tables {
 		imgui.PushStyleVarImVec2(imgui.StyleVar.WindowPadding, {})
-		defer imgui.PopStyleVar()
-
 		imgui.Begin("Pattern Table View", &show_pattern_tables, {.MenuBar})
+		imgui.PopStyleVar()
 
 		@(static) orientation: enum {
 			Vertical,
 			Horizontal,
 		} = .Horizontal
 
+		@(static) palette_index: i32
+
 		if imgui.BeginMenuBar() {
 			if imgui.BeginMenu("Orientation") {
 				if imgui.RadioButton("Vertical", orientation == .Vertical) {
 					orientation = .Vertical
-					imgui.CloseCurrentPopup()
 				}
 
 				if imgui.RadioButton("Horizontal", orientation == .Horizontal) {
 					orientation = .Horizontal
-					imgui.CloseCurrentPopup()
 				}
+
+				imgui.EndMenu()
+			}
+
+			if imgui.BeginMenu("Color") {
+				imgui.RadioButtonIntPtr("White", &palette_index, -1)
+				imgui.RadioButtonIntPtr("Palette 0", &palette_index, 0)
+				imgui.RadioButtonIntPtr("Palette 1", &palette_index, 1)
+				imgui.RadioButtonIntPtr("Palette 2", &palette_index, 2)
+				imgui.RadioButtonIntPtr("Palette 3", &palette_index, 3)
+				imgui.RadioButtonIntPtr("Palette 4", &palette_index, 4)
+				imgui.RadioButtonIntPtr("Palette 5", &palette_index, 5)
+				imgui.RadioButtonIntPtr("Palette 6", &palette_index, 6)
+				imgui.RadioButtonIntPtr("Palette 7", &palette_index, 7)
 
 				imgui.EndMenu()
 			}
 
 			imgui.EndMenuBar()
 		}
+
 
 		emu.ppu_pattern_table_palette_offset_to_buffer(
 			g.emulator.console,
@@ -975,15 +1037,25 @@ render_debug_ui :: proc() {
 			1,
 		)
 
+		fill_buffer(g.debug_ui.pattern_table_0_buffer, palette_index)
+		fill_buffer(g.debug_ui.pattern_table_1_buffer, palette_index)
 
-		for &val in g.debug_ui.pattern_table_0_buffer {
-			if val == 0 do continue
-			val = 0xffffffff
-		}
-
-		for &val in g.debug_ui.pattern_table_1_buffer {
-			if val == 0 do continue
-			val = 0xffffffff
+		fill_buffer :: proc(buf: []u32, palette_index: i32) {
+			// palette index set to -1 will just fill with white,
+			// does not depend on palette memory
+			for &val in buf {
+				if palette_index == -1 {
+					if val == 0 do continue
+					val = 0xffffffff
+				} else {
+					col := emu.ppu_get_color_from_palette(
+						g.emulator.console,
+						uint(palette_index),
+						uint(val),
+					)
+					val = transmute(u32)col
+				}
+			}
 		}
 
 		rl.UpdateTexture(
