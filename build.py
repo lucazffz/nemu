@@ -28,7 +28,8 @@ if len(sys.argv) == 2:
 # Determine the build path based on platform
 build_dir_path = os.curdir + "/build/"
 file_name = "nemu_{platform}_{machine}_{mode}.bin".format(platform=platform, machine=machine, mode=build_mode).lower()
-odin_build_flags_path = "-out:" + build_dir_path + file_name
+build_path = build_dir_path + file_name
+odin_build_flags_path = "-out:" + build_path
 
 # Determine build flags based on build mode
 odin_build_flags_mode = ""
@@ -59,4 +60,4 @@ status = os.system("odin build src " + odin_build_flags)
 if status != 0:
     print("ERROR: Could not create executable")
 else:
-    print("--- Created executable at '{path}'".format(path=build_dir_path + file_name))
+    print("--- Created executable at '{path}'".format(path=build_path))

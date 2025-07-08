@@ -160,7 +160,7 @@ initialize :: proc() {
 	defer delete(rom)
 
 	if ok := emu.ines_is_nes_file_format(rom); !ok {
-		log.errorf("ERROR: file '%s' is not in iNES format", g.rom_file_path)
+		log.errorf("ERROR: file '%s' is not an iNES file", g.rom_file_path)
 		os.exit(1)
 	}
 

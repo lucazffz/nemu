@@ -10,10 +10,10 @@ import "core:sync"
 import "core:time"
 
 ImGui_Logger_Data :: struct {
-	text_buffer:      ^imgui.TextBuffer,
-	allocator:        runtime.Allocator,
-	ident:            string,
-	mutex:            Maybe(^sync.Mutex),
+	text_buffer: ^imgui.TextBuffer,
+	allocator:   runtime.Allocator,
+	ident:       string,
+	mutex:       Maybe(^sync.Mutex),
 }
 
 create_imgui_logger :: proc(
@@ -72,8 +72,6 @@ imgui_logger_proc :: proc(
 		imgui.TextBuffer_append(data.text_buffer, c_str)
 	}
 }
-
-
 
 destroy_imgui_logger :: proc(log: log.Logger, allocator := context.allocator) {
 	free(log.data, allocator)

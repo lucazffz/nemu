@@ -81,6 +81,7 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 	console.cpu.pc = address
 }
 
+// will touch all fields so can be used to reinitialize an existing console
 console_initialize_with_mapper :: proc(console: ^Console, mapper: Mapper) {
 	c: Console
 
@@ -110,7 +111,7 @@ console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
 	if ines.header.tv_system != .NTSC {
 		return errorf(
 			.TV_System_Not_Supported,
-			"TV system %v is not supported, will assume NTSC",
+			"TV system %v is not supported",
 			ines.header.tv_system,
 		)
 	}
@@ -126,7 +127,7 @@ console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
 	if ines.header.cpu_ppu_timing_mode != .RP2C02 {
 		return errorf(
 			.CPU_PPU_Timing_Mode_Not_Supported,
-			"timing mode %v is not supported, will assume RP2C02",
+			"timing mode %v is not supported",
 			ines.header.cpu_ppu_timing_mode,
 		)
 	}
