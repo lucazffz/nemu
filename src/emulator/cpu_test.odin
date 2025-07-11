@@ -20,33 +20,18 @@ failf :: proc(t: ^testing.T, format: string, args: ..any, loc := #caller_locatio
 	log.errorf(format, ..args, location = loc)
 }
 
-
 @(test)
 test_cpu :: proc(t: ^testing.T) {
-	// run the nestest.nes test rom
-	rom_file_path := TEST_ROMS_DIRECTORY_PATH + "/other/nestest.nes"
-	rom, err := os.read_entire_file_or_err(rom_file_path)
+	cartridge, err := cartridge_make_from_filename(TEST_ROMS_DIRECTORY_PATH + "/other/nestest.nes")
 	if err != nil {
-		failf(t, "FAIL: could not open file '%s', %v", rom_file_path, err)
-		return
-	}
-	defer delete(rom)
-
-	ines := get_ines_from_bytes(rom)
-
-	if err := console_vet_ines(ines); err != nil {
-		err := err.?
-		failf(t, "FAIL: %s", err.msg, loc = err.loc)
+		failf(t, "FAIL: %s", err.?.msg)
 		return
 	}
 
 	console := console_make()
 	defer console_delete(console)
 
-	mapper := mapper_make_from_ines(ines)
-	defer mapper_delete(mapper)
-
-	console_initialize_with_mapper(console, mapper)
+	console_initialize_with_cartridge(console, cartridge)
 	_ = console_reset(console)
 	console_set_program_counter(console, 0xc000)
 
