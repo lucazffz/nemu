@@ -9,6 +9,7 @@ Error_Type :: union #shared_nil {
 	iNES_Error,
 	PPU_Error,
 	CPU_Error,
+	IO_Error,
 }
 
 Error_Severity :: enum {
@@ -48,17 +49,24 @@ Memory_Error :: enum {
 	Unallocated_Memory,
 }
 
+IO_Error :: enum {
+	File_Read_Error,
+	Not_iNES_File_Format,
+}
+
+
 iNES_Error :: enum {
+	Format_Variant_Not_Supported,
 	Mapper_Number_Not_Supported,
 	CPU_PPU_Timing_Mode_Not_Supported,
 	Console_System_Not_Supported,
 	TV_System_Not_Supported,
-	Invalid_PRG_RAM_Size,
-	Invalid_PRG_ROM_Size,
-	Invalid_CHR_ROM_Size,
-	CHR_RAM_Not_Supported,
-	PRG_NVRAM_Not_Supported,
-	CHR_NVRAM_Not_Supported,
+	// Invalid_PRG_RAM_Size,
+	// Invalid_PRG_ROM_Size,
+	// Invalid_CHR_ROM_Size,
+	// CHR_RAM_Not_Supported,
+	// PRG_NVRAM_Not_Supported,
+	// CHR_NVRAM_Not_Supported,
 }
 
 
@@ -119,5 +127,4 @@ error_log :: proc(err: Error, level := log.Level.Error) {
 	msg := error_to_string(err, prefix)
 	log.log(level, msg, location = err.loc)
 }
-
 

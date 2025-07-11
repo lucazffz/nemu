@@ -30,6 +30,7 @@ Emulation_State :: enum {
 	Run_Until_Instruction,
 	Run_Until_Cycle,
 	Run_Until_Frame,
+	Run_Until_Address,
 }
 
 // ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, #directory + "./assets")
@@ -52,10 +53,10 @@ g: struct #no_copy {
 	emulator:       struct {
 		// @note state is written to by both threads without synchronization,
 		// may cause data race but unsure if thats a problem
+		break_point_addr:  u16,
 		state:             Emulation_State,
 		run_count:         i32,
 		console:           ^emu.Console,
-		mapper:            emu.Mapper,
 		frame_mutex:       sync.Mutex,
 		frame_time:        time.Duration,
 		target_frame_time: time.Duration,
@@ -152,32 +153,15 @@ main :: proc() {
 
 
 initialize :: proc() {
-	// Read ROM from iNES file
-	rom, err := os.read_entire_file_or_err(g.rom_file_path)
+	cartridge, err := emu.cartridge_make_from_filename(g.rom_file_path)
 	if err != nil {
-		log.errorf("ERROR: could not open file '%s', %v", g.rom_file_path, err)
-		os.exit(1)
-	}
-	defer delete(rom)
-
-	if ok := emu.ines_is_nes_file_format(rom); !ok {
-		log.errorf("ERROR: file '%s' is not an iNES file", g.rom_file_path)
-		os.exit(1)
-	}
-
-
-	// Initialize console and mapper
-	ines := emu.get_ines_from_bytes(rom)
-
-	if err := emu.console_vet_ines(ines); err != nil {
 		emu.error_log(err.?)
 		os.exit(1)
 	}
 
 	g.emulator.console = emu.console_make()
-	g.emulator.mapper = emu.mapper_make_from_ines(ines)
 
-	emu.console_initialize_with_mapper(g.emulator.console, g.emulator.mapper)
+	emu.console_initialize_with_cartridge(g.emulator.console, cartridge)
 	_ = emu.console_reset(g.emulator.console)
 
 	g.emulator.target_frame_time = time.Second / 60
@@ -234,7 +218,7 @@ initialize :: proc() {
 	g.debug_ui.pattern_table_0_texture = rl.LoadTextureFromImage(pattern_table_0_img)
 	g.debug_ui.pattern_table_1_texture = rl.LoadTextureFromImage(pattern_table_1_img)
 
-	g.emulator.state = .Run
+	g.emulator.state = .Pause
 }
 
 atomic_buffer_swap :: proc(buffer_1: ^[]$E, buffer_2: ^[]E, mutex: ^sync.Mutex) {
@@ -257,7 +241,7 @@ shutdown :: proc() {
 	rl.CloseWindow()
 
 	emu.console_delete(g.emulator.console)
-	emu.mapper_delete(g.emulator.mapper)
+	// emu.mapper_delete(g.emulator.mapper)
 
 	delete(g.view.front_buffer)
 	delete(g.view.back_buffer)
@@ -311,6 +295,13 @@ emulator_loop :: proc() {
 			if g.emulator.run_count <= 0 {
 				g.emulator.state = .Pause
 			}
+		case .Run_Until_Address:
+			limit_frame_time = false
+			frame_complete, instr_complete = exec()
+			if g.emulator.console.cpu.pc == g.emulator.break_point_addr {
+				g.emulator.state = .Pause
+			}
+
 		case .Step_Cycle:
 			limit_frame_time = false
 			frame_complete, instr_complete = exec()
@@ -369,6 +360,7 @@ emulator_loop :: proc() {
 	}
 }
 
+
 main_loop :: proc() {
 	// monitor_num := rl.GetCurrentMonitor()
 	// refresh_rate := rl.GetMonitorRefreshRate(monitor_num)
@@ -381,6 +373,7 @@ main_loop :: proc() {
 	// }
 
 	// rl.SetTargetFPS(refresh_rate)
+
 
 	for !rl.WindowShouldClose() && !g.should_exit {
 		if rl.IsKeyPressed(.F3) do g.debug_ui.show = !g.debug_ui.show
@@ -548,6 +541,8 @@ render_debug_ui :: proc() {
 	@(static) show_oam: bool
 	@(static) show_break_in: bool
 	@(static) show_performance: bool
+	@(static) show_set_break_point: bool
+	@(static) show_rom_info: bool
 
 	imgui.DockSpaceOverViewport(g.debug_ui.dockspace_id)
 
@@ -555,6 +550,10 @@ render_debug_ui :: proc() {
 		if imgui.BeginMenu("Home") {
 			if imgui.MenuItem("Performance") {
 				show_performance = true
+			}
+
+			if imgui.MenuItem("ROM Info") {
+				show_rom_info = true
 			}
 
 			if imgui.MenuItem("Exit") {
@@ -615,6 +614,10 @@ render_debug_ui :: proc() {
 				show_break_in = true
 			}
 
+			if imgui.MenuItem("Set Break Point", enabled = !emulator_is_running()) {
+				show_set_break_point = true
+			}
+
 			if imgui.MenuItem("Reset", enabled = !emulator_is_running()) {
 				slice.fill(g.view.front_buffer, 0x0)
 				_ = emu.console_reset(g.emulator.console)
@@ -625,38 +628,16 @@ render_debug_ui :: proc() {
 			// might try to access freed memory, therefore must ensure that
 			// emulation is paused
 			if imgui.MenuItem("Reload ROM", enabled = !emulator_is_running()) {
-				slice.fill(g.view.front_buffer, 0x0)
-
-				rom, err := os.read_entire_file_or_err(g.rom_file_path)
-				if err != nil {
-					log.errorf("ERROR: could not open file '%s', %v", g.rom_file_path, err)
-					os.exit(1)
-				}
-				defer delete(rom)
-
-				if ok := emu.ines_is_nes_file_format(rom); !ok {
-					log.errorf("ERROR: file '%s' is not in iNES format", g.rom_file_path)
-					os.exit(1)
-				}
-
-
-				// Initialize console and mapper
-				ines := emu.get_ines_from_bytes(rom)
-
-				if err := emu.console_vet_ines(ines); err != nil {
+				if cartridge, err := emu.cartridge_make_from_filename(g.rom_file_path);
+				   err != nil {
 					emu.error_log(err.?)
-					os.exit(1)
+				} else {
+					emu.console_delete(g.emulator.console)
+					g.emulator.console = emu.console_make()
+
+					emu.console_initialize_with_cartridge(g.emulator.console, cartridge)
+					_ = emu.console_reset(g.emulator.console)
 				}
-
-				emu.console_delete(g.emulator.console)
-				emu.mapper_delete(g.emulator.mapper)
-				g.emulator.console = emu.console_make()
-				g.emulator.mapper = emu.mapper_make_from_ines(ines)
-
-				emu.console_initialize_with_mapper(g.emulator.console, g.emulator.mapper)
-				_ = emu.console_reset(g.emulator.console)
-
-				log.infof("INFO: Reload emulator from ROM '%s'", g.rom_file_path)
 			}
 
 			imgui.EndMenu()
@@ -684,9 +665,9 @@ render_debug_ui :: proc() {
 
 			render_frame_time_sec := rl.GetFrameTime()
 			imgui.Text(
-				"Render FPS: %03d (%0.2fms)",
+				"Render FPS: %03d (%.2fms)",
 				i32(1 / render_frame_time_sec),
-				render_frame_time_sec / 1000,
+				render_frame_time_sec * 1000,
 			)
 
 			imgui.End()
@@ -731,6 +712,43 @@ render_debug_ui :: proc() {
 				show_break_in = false
 			}
 
+			imgui.End()
+		}
+	}
+
+	if show_set_break_point {
+		@(static) break_point_address: i32
+		if imgui.Begin(
+			"Break Point",
+			&show_set_break_point,
+			{.AlwaysAutoResize, .NoDocking, .NoCollapse},
+		) {
+			imgui.InputInt("Break Point Address", &break_point_address)
+
+			if imgui.Button("Run") {
+				// g.emulator.run_count = count
+				// switch selection {
+				// case .Instruction:
+				// 	g.emulator.state = .Run_Until_Instruction
+				// case .Frame:
+				// 	g.emulator.state = .Run_Until_Frame
+				// case .Cycle:
+				// 	g.emulator.state = .Run_Until_Cycle
+				// }
+
+				g.emulator.break_point_addr = u16(break_point_address)
+				g.emulator.state = .Run_Until_Address
+				show_set_break_point = false
+			}
+
+			imgui.End()
+		}
+
+	}
+
+	if show_rom_info {
+		if imgui.Begin("ROM Info", &show_rom_info, {.AlwaysAutoResize, .NoDocking, .NoCollapse}) {
+			imgui.Text("%s", emu.ines_header_to_string(g.emulator.console.cartridge.ines_header))
 			imgui.End()
 		}
 	}
@@ -993,7 +1011,7 @@ render_debug_ui :: proc() {
 			Horizontal,
 		} = .Horizontal
 
-		@(static) palette_index: i32
+		@(static) palette_index: i32 = -1
 
 		if imgui.BeginMenuBar() {
 			if imgui.BeginMenu("Orientation") {
@@ -1027,12 +1045,14 @@ render_debug_ui :: proc() {
 
 
 		emu.ppu_pattern_table_palette_offset_to_buffer(
-			g.emulator.console,
+			&g.emulator.console.ppu,
+			g.emulator.console.cartridge,
 			g.debug_ui.pattern_table_0_buffer,
 			0,
 		)
 		emu.ppu_pattern_table_palette_offset_to_buffer(
-			g.emulator.console,
+			&g.emulator.console.ppu,
+			g.emulator.console.cartridge,
 			g.debug_ui.pattern_table_1_buffer,
 			1,
 		)
@@ -1049,7 +1069,7 @@ render_debug_ui :: proc() {
 					val = 0xffffffff
 				} else {
 					col := emu.ppu_get_color_from_palette(
-						g.emulator.console,
+						&g.emulator.console.ppu,
 						uint(palette_index),
 						uint(val),
 					)
@@ -1212,7 +1232,7 @@ render_debug_ui :: proc() {
 	}
 
 	get_palette_color :: proc(#any_int palette_index, offset: uint) -> u32 {
-		c := emu.ppu_get_color_from_palette(g.emulator.console, palette_index, offset)
+		c := emu.ppu_get_color_from_palette(&g.emulator.console.ppu, palette_index, offset)
 		return transmute(u32)c
 	}
 }

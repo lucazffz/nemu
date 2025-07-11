@@ -31,7 +31,7 @@ Vec3 :: [2]f32
 console: emulator.Console
 
 @(private = "file")
-mapper: emulator.Mapper
+mapper: emulator.Mappe
 
 @(private = "file")
 clay_mem: [^]byte
