@@ -3,6 +3,8 @@ package emulator
 // @note Consecutive-cycle writes are not emulated which
 // will cause issues in certain games.
 // See https://www.nesdev.org/wiki/MMC1 for documentation.
+//
+// It also does not respect the chip enable bit in the PRG bank register
 Mapper1 :: struct {
 	using m:             Mapper,
 	// all registers are 5 bits
@@ -25,8 +27,7 @@ Mapper1 :: struct {
 
 mapper1_make :: proc() -> ^Mapper1 {
 	m := new(Mapper1)
-	m.load_register = 0x10
-	m.control.prg_rom_bank_mode = 3
+	reset(m)
 
 	m.write_to_address = mapper1_write_to_address
 	m.read_from_address = mapper1_read_from_address
@@ -34,11 +35,13 @@ mapper1_make :: proc() -> ^Mapper1 {
 	return m
 }
 
+@(private = "file")
 mapper1_delete :: proc(mapper: ^Mapper) {
 	m := cast(^Mapper1)mapper
 	free(m)
 }
 
+@(private = "file")
 mapper1_write_to_address :: proc(
 	mapper: ^Mapper,
 	c: ^Cartridge,
@@ -56,7 +59,7 @@ mapper1_write_to_address :: proc(
 			c.chr_ram[offset] = data
 		} else if c.chr_rom != nil {
 			err = errorf(
-				.Read_Only,
+				.Memory_Error,
 				"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
 				data,
 				address,
@@ -73,8 +76,8 @@ mapper1_write_to_address :: proc(
 			c.prg_ram[address - 0x6000] = data
 		} else {
 			err = errorf(
-				.Unallocated_Memory,
-				"cannot write '%02X' to $%04X, PRG-RAM memory ($6000-$8000) is unallocated",
+				.Memory_Error,
+				"cannot write '%02X' to $%04X, PRG-RAM ($6000-$7FFF) is unallocated",
 				data,
 				address,
 				severity = .Warning,
@@ -89,6 +92,7 @@ mapper1_write_to_address :: proc(
 	return
 }
 
+@(private = "file")
 mapper1_read_from_address :: proc(
 	mapper: ^Mapper,
 	c: ^Cartridge,
@@ -120,8 +124,8 @@ mapper1_read_from_address :: proc(
 			data = c.prg_ram[address - 0x6000]
 		} else {
 			err = errorf(
-				.Unallocated_Memory,
-				"cannot read from $%04X, PRG-RAM memory ($6000-$8000) is unallocated",
+				.Memory_Error,
+				"cannot read from $%04X, PRG-RAM ($6000-$7FFF) is unallocated",
 				address,
 			)
 		}
@@ -136,15 +140,19 @@ mapper1_read_from_address :: proc(
 }
 
 @(private = "file")
+reset :: proc(m: ^Mapper1) {
+	m.load_register = 0x10
+	m.control.prg_rom_bank_mode = 3
+}
+
+@(private = "file")
 write_to_load_register :: proc(m: ^Mapper1, c: ^Cartridge, data: u8, address: u16) {
 	// log.info(m.prg_bank_register)
 	// mirroring: Nametable_Mirroring
 
 	// reset shift register if bit 7 of data is set
 	if (data & 0x80) == 0x80 {
-		m.load_register = 0x10
-		// m.load_register_count = 0
-		m.control.prg_rom_bank_mode = 3
+		reset(m)
 	} else {
 		complete := m.load_register & 0x1 == 1
 		m.load_register = (m.load_register >> 1) | ((data & 0x01) << 4)
@@ -180,7 +188,6 @@ write_to_load_register :: proc(m: ^Mapper1, c: ^Cartridge, data: u8, address: u1
 			}
 
 			m.load_register = 0x10 // clear register after 5th write
-			// m.load_register_count = 0
 		}
 
 	}

@@ -13,11 +13,13 @@ mapper0_make :: proc() -> ^Mapper0 {
 	return m
 }
 
+@(private = "file")
 mapper0_delete :: proc(mapper: ^Mapper) {
 	m := cast(^Mapper0)mapper
 	free(m)
 }
 
+@(private = "file")
 mapper0_write_to_address :: proc(
 	mapper: ^Mapper,
 	c: ^Cartridge,
@@ -30,7 +32,7 @@ mapper0_write_to_address :: proc(
 	switch address {
 	case 0x0000 ..< 0x2000:
 		err = errorf(
-			.Read_Only,
+			.Memory_Error,
 			"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
 			data,
 			address,
@@ -48,8 +50,8 @@ mapper0_write_to_address :: proc(
 			c.prg_ram[addr - 0x6000] = data
 		} else {
 			err = errorf(
-				.Unallocated_Memory,
-				"cannot write '%02X' to $%04X, PRG-RAM memory ($6000-$8000) is unallocated",
+				.Memory_Error,
+				"cannot write '%02X' to $%04X, PRG-RAM ($6000-$7FFF) is unallocated",
 				data,
 				address,
 				severity = .Warning,
@@ -62,6 +64,7 @@ mapper0_write_to_address :: proc(
 	return
 }
 
+@(private = "file")
 mapper0_read_from_address :: proc(
 	mapper: ^Mapper,
 	c: ^Cartridge,
@@ -83,8 +86,8 @@ mapper0_read_from_address :: proc(
 			data = c.prg_ram[address & 0xfff]
 		} else {
 			err = errorf(
-				.Unallocated_Memory,
-				"cannot read from $%04X, PRG-RAM memory ($6000-$8000) is unallocated",
+				.Memory_Error,
+				"cannot read from $%04X, PRG-RAM ($6000-$7FFF) is unallocated",
 				address,
 			)
 		}

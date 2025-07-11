@@ -6,7 +6,7 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
-SUPPORTED_MAPPERS :: []int{0, 1}
+SUPPORTED_MAPPERS :: []int{0, 1, 2}
 
 Console :: struct {
 	cpu:         CPU,
@@ -104,32 +104,20 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 
 console_vet_ines :: proc(ines: NES20) -> Maybe(Error) {
 	if !slice.contains(SUPPORTED_MAPPERS, ines.header.mapper_number) {
-		return errorf(
-			.Mapper_Number_Not_Supported,
-			"mapper %d is not supported",
-			ines.header.mapper_number,
-		)
+		return errorf(.iNES_Error, "mapper %d is not supported", ines.header.mapper_number)
 	}
 
 	if ines.header.tv_system != .NTSC {
-		return errorf(
-			.TV_System_Not_Supported,
-			"TV system %v is not supported",
-			ines.header.tv_system,
-		)
+		return errorf(.iNES_Error, "TV system %v is not supported", ines.header.tv_system)
 	}
 
 	if _, ok := ines.header.console_type.(Nintendo_Entertainment_System); !ok {
-		return errorf(
-			.Console_System_Not_Supported,
-			"console system %v is not supported",
-			ines.header.console_type,
-		)
+		return errorf(.iNES_Error, "console system %v is not supported", ines.header.console_type)
 	}
 
 	if ines.header.cpu_ppu_timing_mode != .RP2C02 {
 		return errorf(
-			.CPU_PPU_Timing_Mode_Not_Supported,
+			.iNES_Error,
 			"timing mode %v is not supported",
 			ines.header.cpu_ppu_timing_mode,
 		)
@@ -265,7 +253,7 @@ console_read_from_address :: proc(
 		// APU and I/O registers
 		switch address {
 		case 0x4014:
-			err = error(.Write_Only, "OAMDMA register at address $4014 is write-only")
+			err = error(.Memory_Error, "OAMDMA register at address $4014 is write-only")
 		case 0x4016:
 			data = controller_read(&console.controller1)
 		case 0x417:

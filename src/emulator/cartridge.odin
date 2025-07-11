@@ -54,23 +54,35 @@ cartridge_nametable_arrangement_to_mirroring :: proc(
 cartridge_make_from_filename :: proc(filename: string) -> (^Cartridge, Maybe(Error)) {
 	rom, err := os.read_entire_file_or_err(filename)
 	if err != nil {
-		return nil, errorf(.File_Read_Error, "could not open file '%s', %v", filename, err)
+		return nil, errorf(
+			.IO_Error,
+			"could not open file '%s', %v",
+			filename,
+			err,
+			severity = .Fatal,
+		)
 
 	}
 
 	defer delete(rom)
 
 	if ok := ines_is_nes_file_format(rom); !ok {
-		return nil, errorf(.Not_iNES_File_Format, "file '%s' is not an iNES file", filename)
+		return nil, errorf(
+			.iNES_Error,
+			"file '%s' is not an iNES file",
+			filename,
+			severity = .Fatal,
+		)
 	}
 
 	ines_variant := ines_determine_format_variant_from_bytes(rom)
 	if ines_variant != .NES_20 && ines_variant != .iNES {
 		return nil, errorf(
-			.Format_Variant_Not_Supported,
+			.iNES_Error,
 			"file '%s' is of iNES variant '%v', only iNES 1.0 and 2.0 supported",
 			filename,
 			ines_variant,
+			severity = .Fatal,
 		)
 	}
 
@@ -119,6 +131,8 @@ cartridge_make_from_ines :: proc(
 			c.mapper = &mapper0_make().m
 		case 1:
 			c.mapper = &mapper1_make().m
+		case 2:
+			c.mapper = &mapper2_make().m
 		case:
 			panic("mapper not supported")
 		}
@@ -187,7 +201,7 @@ cartridge_read_from_address :: proc(
 	case 0x4020 ..< 0x6000:
 		// expansion ROM
 		err = errorf(
-			.Unallocated_Memory,
+			.Memory_Error,
 			"cannot read from $%04X, expansion area not supported by mapper 0($4020-$5FFF)",
 			address,
 		)
@@ -210,7 +224,7 @@ cartridge_write_to_address :: proc(
 	case 0x4020 ..< 0x6000:
 		// expansion ROM
 		err = errorf(
-			.Unallocated_Memory,
+			.Memory_Error,
 			"cannot read from $%04X, expansion area not supported by mapper 0($4020-$5FFF)",
 			address,
 		)

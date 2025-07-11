@@ -113,6 +113,7 @@ ines_vet :: proc(ines: NES20) -> Maybe(Error) {
 	return nil
 }
 
+@(require_results)
 ines_header_to_string :: proc(header: NES20_Header) -> string {
 	template := `Mapper Number:                %d
 Mapper Subnumber:             %d
@@ -193,7 +194,7 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_o
 		exponent := uint(prg_rom_size_lsb & 0xfc)
 		header.prg_rom_size = (multiplier * 2 + 1) * (1 << exponent)
 	} else {
-		header.prg_rom_size = int((prg_rom_size_msb << 8) | prg_rom_size_lsb) * 16 * KB
+		header.prg_rom_size = int((prg_rom_size_msb << 4) | prg_rom_size_lsb) * 16 * KB
 	}
 
 
@@ -206,7 +207,7 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_o
 		exponent := uint(chr_rom_size_lsb & 0xfc)
 		header.chr_rom_size = (multiplier * 2 + 1) * (1 << exponent)
 	} else {
-		header.chr_rom_size = int((chr_rom_size_msb << 8) | chr_rom_size_lsb) * 8 * KB
+		header.chr_rom_size = int((chr_rom_size_msb << 4) | chr_rom_size_lsb) * 8 * KB
 	}
 
 	header.nametable_arrangement = (data[6] & 0x01) == 1 ? .Horizontal : .Vertical
@@ -266,7 +267,7 @@ get_ines_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_o
 		}
 
 		// support iNES flag 8 and 9 (rarely used specification extensions)
-		header.prg_ram_size = data[8] > 0 ? int(data[8]) : 8 * KB // 0 infers 8KB
+		header.prg_ram_size = data[8] > 0 ? int(data[8]) * 8 * KB : 8 * KB // 0 infers 8KB
 		header.tv_system = auto_cast (data[9] & 0x1)
 	}
 

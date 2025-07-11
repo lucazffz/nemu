@@ -4,7 +4,7 @@ import "base:runtime"
 import "core:fmt"
 import "core:log"
 
-Error_Type :: union #shared_nil {
+Error_Type :: enum {
 	Memory_Error,
 	iNES_Error,
 	PPU_Error,
@@ -18,57 +18,12 @@ Error_Severity :: enum {
 	Fatal, // could not recover, should halt execution
 }
 
-
 Error :: struct {
 	type:     Error_Type,
 	severity: Error_Severity,
 	msg:      string,
 	loc:      runtime.Source_Code_Location,
 }
-
-CPU_Error :: enum {
-	Operand_Error,
-	Branch_Error,
-	Stack_Error,
-	Opcode_Error,
-	Reset_Error,
-}
-
-PPU_Error :: enum {
-	Nametable_Read_Error,
-	Pattern_Table_Read_Error,
-	Palette_Read_Error,
-}
-
-Memory_Error :: enum {
-	Invalid_Address,
-	Write_Only,
-	Read_Only,
-	// Out_Of_Memory,
-	// Unused_Memory,
-	Unallocated_Memory,
-}
-
-IO_Error :: enum {
-	File_Read_Error,
-	Not_iNES_File_Format,
-}
-
-
-iNES_Error :: enum {
-	Format_Variant_Not_Supported,
-	Mapper_Number_Not_Supported,
-	CPU_PPU_Timing_Mode_Not_Supported,
-	Console_System_Not_Supported,
-	TV_System_Not_Supported,
-	// Invalid_PRG_RAM_Size,
-	// Invalid_PRG_ROM_Size,
-	// Invalid_CHR_ROM_Size,
-	// CHR_RAM_Not_Supported,
-	// PRG_NVRAM_Not_Supported,
-	// CHR_NVRAM_Not_Supported,
-}
-
 
 @(require_results)
 error :: proc(
@@ -94,25 +49,45 @@ errorf :: proc(
 }
 
 @(require_results)
+errorfln :: proc(
+	type: Error_Type,
+	format: string,
+	args: ..any,
+	severity: Error_Severity = .Error,
+	loc := #caller_location,
+) -> Error {
+	msg := fmt.tprintf(format, ..args, newline = true)
+	return {type, severity, msg, loc}
+}
+
+@(require_results)
 error_to_string :: proc(err: Error, prefix := "ERROR: ") -> string {
 	msg := err.msg
-	if msg == "" {
-		switch err.type {
-		case .Invalid_Address:
-		case .Read_Only:
-		// case .Out_Of_Memory:
-		case:
-			msg = "unexpected problem occurred"
-		}
-
-	}
-
+	if msg == "" do msg = "unexpected problem occured"
 	return fmt.tprintf("%s%s [%v]", prefix, msg, err.type)
 }
 
-error_log :: proc(err: Error, level := log.Level.Error) {
+error_log :: proc(err: Error, level: Maybe(log.Level) = nil) {
 	prefix: string
-	switch level {
+	log_level: log.Level
+
+	// set log level to level if present, otherwise default to match the
+	// error severity
+	if level, ok := level.?; ok {
+		log_level = level
+	} else {
+		switch err.severity {
+		case .Warning:
+			log_level = .Warning
+		case .Error:
+			log_level = .Error
+		case .Fatal:
+			log_level = .Fatal
+		}
+	}
+
+	// set message prefix based on log level
+	switch log_level {
 	case .Debug:
 		prefix = "DEBUG: "
 	case .Info:
@@ -124,7 +99,8 @@ error_log :: proc(err: Error, level := log.Level.Error) {
 	case .Fatal:
 		prefix = "FATAL: "
 	}
+
 	msg := error_to_string(err, prefix)
-	log.log(level, msg, location = err.loc)
+	log.log(log_level, msg, location = err.loc)
 }
 

@@ -132,10 +132,10 @@ ppu_read_from_mmio_register :: proc(
 	switch address_offset {
 	case 0:
 		// PPUSTATUS - Miscellaneous settings ($2000 write-only)
-		err = error(.Write_Only, "cannot read from $2000, PPUCTRL is write-only", .Warning)
+		err = error(.Memory_Error, "cannot read from $2000, PPUCTRL is write-only", .Warning)
 	case 1:
 		// PPUMASK - Rendering settings ($2001 write-only)
-		err = error(.Write_Only, "cannot read from $2001, PPUMASK is write-only", .Warning)
+		err = error(.Memory_Error, "cannot read from $2001, PPUMASK is write-only", .Warning)
 	case 2:
 		// PPUSTATUS - Rendering events ($2002 read-only)
 		data = (u8(ppu.status) & 0xe0) | (ppu.read_buffer & 0x1f)
@@ -144,16 +144,16 @@ ppu_read_from_mmio_register :: proc(
 		ppu.status.vblank = false
 	case 3:
 		// OAMADDR - Sprite RAM address ($2003 write-only)
-		err = error(.Write_Only, "cannot read from $2003, OAMADDR is write-only", .Warning)
+		err = error(.Memory_Error, "cannot read from $2003, OAMADDR is write-only", .Warning)
 	case 4:
 		// OAMDATA - Sprite RAM data ($2004 read-write)
 		data = ppu_oam_read_from_address(ppu, ppu.oamaddr)
 	case 5:
 		// PPUSCROLL - X and Y scroll ($2005 write-only)
-		err = error(.Write_Only, "cannot read from $2005, PPUSCROLL is write-only", .Warning)
+		err = error(.Memory_Error, "cannot read from $2005, PPUSCROLL is write-only", .Warning)
 	case 6:
 		// PPUADDR - VRAM address ($2006 write-only)
-		err = error(.Write_Only, "cannot read from $2006, PPUADDR is write-only", .Warning)
+		err = error(.Memory_Error, "cannot read from $2006, PPUADDR is write-only", .Warning)
 	case 7:
 		// PPUDATA - VRAM data ($2007 read-write)
 		// When reading from PPUDATA, the data is provided by a buffer due
@@ -228,7 +228,7 @@ ppu_write_to_mmio_register :: proc(
 	case 2:
 		// PPUSTATUS - Rendering events ($2002 read-only)
 		err = errorf(
-			.Read_Only,
+			.Memory_Error,
 			"cannot write '%02X' to $2002, PPUSTATUS is read-only",
 			data,
 			severity = .Warning,
@@ -340,7 +340,7 @@ ppu_read_from_address :: proc(ppu: ^PPU, cartridge: ^Cartridge, address: u16) ->
 		return ppu.palette[addr]
 	case:
 		return 0
-		// panic(fmt.tprintf("invalid address $%04X", address))
+	// panic(fmt.tprintf("invalid address $%04X", address))
 	}
 
 }

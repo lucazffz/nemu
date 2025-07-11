@@ -216,7 +216,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 	if opcode, e := console_read_from_address(console, start_pc); e != nil {
 		e := e.?
 		return false, errorf(
-			.Opcode_Error,
+			.CPU_Error,
 			"could not read opcode from $%04X: \"%s\"",
 			start_pc,
 			e.msg,
@@ -337,7 +337,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 				instr.addressing_mode,
 			); err != nil {
 				return errorf(
-					.Operand_Error,
+					.CPU_Error,
 					"could not read instruction (%v) operand using addressing mode %v: \"%s\"",
 					instr.type,
 					instr.addressing_mode,
@@ -810,7 +810,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 				rel_addr: u8
 				if rel_addr, err = console_read_from_address(console, address); err != nil {
 					err = errorf(
-						.Branch_Error,
+						.CPU_Error,
 						"could not read relative address from $%04X",
 						address,
 					)

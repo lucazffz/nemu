@@ -164,6 +164,7 @@ initialize :: proc() {
 	emu.console_initialize_with_cartridge(g.emulator.console, cartridge)
 	_ = emu.console_reset(g.emulator.console)
 
+
 	g.emulator.target_frame_time = time.Second / 60
 
 	g.view.front_buffer = make([]emu.Color, GAME_WIDTH * GAME_HEIGHT)
