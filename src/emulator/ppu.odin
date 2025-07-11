@@ -121,7 +121,8 @@ PPU :: struct {
 
 @(require_results)
 ppu_read_from_mmio_register :: proc(
-	console: ^Console,
+	ppu: ^PPU,
+	cartridge: ^Cartridge,
 	address_offset: u8,
 ) -> (
 	data: u8,
@@ -137,16 +138,16 @@ ppu_read_from_mmio_register :: proc(
 		err = error(.Write_Only, "cannot read from $2001, PPUMASK is write-only", .Warning)
 	case 2:
 		// PPUSTATUS - Rendering events ($2002 read-only)
-		data = (u8(console.ppu.status) & 0xe0) | (console.ppu.read_buffer & 0x1f)
+		data = (u8(ppu.status) & 0xe0) | (ppu.read_buffer & 0x1f)
 		// reading has the side effect of clearing w and vblank
-		console.ppu.w = 0
-		console.ppu.status.vblank = false
+		ppu.w = 0
+		ppu.status.vblank = false
 	case 3:
 		// OAMADDR - Sprite RAM address ($2003 write-only)
 		err = error(.Write_Only, "cannot read from $2003, OAMADDR is write-only", .Warning)
 	case 4:
 		// OAMDATA - Sprite RAM data ($2004 read-write)
-		data = ppu_oam_read_from_address(&console.ppu, console.ppu.oamaddr)
+		data = ppu_oam_read_from_address(ppu, ppu.oamaddr)
 	case 5:
 		// PPUSCROLL - X and Y scroll ($2005 write-only)
 		err = error(.Write_Only, "cannot read from $2005, PPUSCROLL is write-only", .Warning)
@@ -158,14 +159,14 @@ ppu_read_from_mmio_register :: proc(
 		// When reading from PPUDATA, the data is provided by a buffer due
 		// to slow PPU bus speeds. The buffer is then updated with a new
 		// value from VRAM[PPUADDR]. The buffer is ONLY updated after a read
-		data = console.ppu.read_buffer
-		console.ppu.read_buffer = ppu_read_from_address(console, u16(console.ppu.v))
+		data = ppu.read_buffer
+		ppu.read_buffer = ppu_read_from_address(ppu, cartridge, u16(ppu.v))
 
 		// the palette memory doesnt have this delay since its internal
 		// to the ppu
-		if u16(console.ppu.v) > 0x3f00 do data = console.ppu.read_buffer
+		if u16(ppu.v) > 0x3f00 do data = ppu.read_buffer
 
-		ppu_increment_loopy_register(&console.ppu.v, console.ppu.ctrl.vram_address_increment == 1)
+		ppu_increment_loopy_register(&ppu.v, ppu.ctrl.vram_address_increment == 1)
 
 	// if console.ppu.ctrl.vram_address_increment == 0 {
 	// 	// @todo fix
@@ -208,7 +209,8 @@ ppu_read_from_mmio_register :: proc(
 
 @(require_results)
 ppu_write_to_mmio_register :: proc(
-	console: ^Console,
+	ppu: ^PPU,
+	cartridge: ^Cartridge,
 	data: u8,
 	address_offset: u8,
 ) -> (
@@ -217,12 +219,12 @@ ppu_write_to_mmio_register :: proc(
 	switch address_offset {
 	case 0:
 		// PPUSTATUS - Miscellaneous settings ($2000 write-only)
-		console.ppu.ctrl = auto_cast data
-		console.ppu.t.nametable_x = u16(data & 0x1)
-		console.ppu.t.nametable_y = u16((data >> 1) & 0x1)
+		ppu.ctrl = auto_cast data
+		ppu.t.nametable_x = u16(data & 0x1)
+		ppu.t.nametable_y = u16((data >> 1) & 0x1)
 	case 1:
 		// PPUMASK - Rendering settings ($2001 write-only)
-		console.ppu.mask = auto_cast data
+		ppu.mask = auto_cast data
 	case 2:
 		// PPUSTATUS - Rendering events ($2002 read-only)
 		err = errorf(
@@ -233,50 +235,50 @@ ppu_write_to_mmio_register :: proc(
 		)
 	case 3:
 		// OAMADDR - Sprite RAM address ($2003 write-only)
-		console.ppu.oamaddr = data
+		ppu.oamaddr = data
 	case 4:
 		// OAMDATA - Sprite RAM data ($2004 read-write)
 		// do not write if rendering
 		// preform buggy OAMADDR increment using only 6 highest bits
-		if console.ppu.is_rendering {
-			addr := console.ppu.oamaddr
+		if ppu.is_rendering {
+			addr := ppu.oamaddr
 			addr = (((addr >> 2) + 1) << 2) | (addr & 0x3)
-			console.ppu.oamaddr = addr
+			ppu.oamaddr = addr
 		} else {
 			// when writing to OAMDATA, the data is immediately written to OAM
-			ppu_oam_write_to_address(&console.ppu, data, console.ppu.oamaddr)
+			ppu_oam_write_to_address(ppu, data, ppu.oamaddr)
 			// writes will increment OAMADDR after write to OAMDATA, reads do not
-			console.ppu.oamaddr += 1
+			ppu.oamaddr += 1
 		}
 	case 5:
 		// PPUSCROLL - X and Y scroll ($2005 write-only)
-		if console.ppu.w == 0 {
-			console.ppu.x = (data & 0x7)
-			console.ppu.t.coarse_x = u16(data >> 3)
-			console.ppu.w = 1
+		if ppu.w == 0 {
+			ppu.x = (data & 0x7)
+			ppu.t.coarse_x = u16(data >> 3)
+			ppu.w = 1
 		} else {
-			console.ppu.t.fine_y = u16(data & 0x7)
-			console.ppu.t.coarse_y = u16(data >> 3)
-			console.ppu.w = 0
+			ppu.t.fine_y = u16(data & 0x7)
+			ppu.t.coarse_y = u16(data >> 3)
+			ppu.w = 0
 		}
 	case 6:
 		// PPUADDR - VRAM address ($2006 write-only)
-		if console.ppu.w == 0 {
+		if ppu.w == 0 {
 			// if w is 0, write high byte and set w
-			console.ppu.t = auto_cast ((u16(data & 0x3f) << 8) | (u16(console.ppu.t) & 0x00ff))
-			console.ppu.w = 1
+			ppu.t = auto_cast ((u16(data & 0x3f) << 8) | (u16(ppu.t) & 0x00ff))
+			ppu.w = 1
 		} else {
 			// if w is 1, write low byte and clear w
-			console.ppu.t = auto_cast ((u16(console.ppu.t) & 0xff00) | u16(data))
-			console.ppu.v = console.ppu.t // write to v when have full address
-			console.ppu.w = 0
+			ppu.t = auto_cast ((u16(ppu.t) & 0xff00) | u16(data))
+			ppu.v = ppu.t // write to v when have full address
+			ppu.w = 0
 		}
 	case 7:
 		// PPUDATA - VRAM data ($2007 read-write)
 		// when writing to PPUDATA, the data is immediately written to VRAM
 		// @todo implement increment behaviour during rendering
-		err = ppu_write_to_address(console, data, u16(console.ppu.v))
-		ppu_increment_loopy_register(&console.ppu.v, console.ppu.ctrl.vram_address_increment == 1)
+		err = ppu_write_to_address(ppu, cartridge, data, u16(ppu.v))
+		ppu_increment_loopy_register(&ppu.v, ppu.ctrl.vram_address_increment == 1)
 	case:
 		panic(fmt.tprintf("unrecognized PPU register at address offset %02x", address_offset))
 	}
@@ -291,51 +293,56 @@ ppu_oam_write_to_address :: proc(ppu: ^PPU, data: u8, address: u8) {
 }
 
 @(require_results)
-ppu_write_to_address :: proc(console: ^Console, data: u8, address: u16) -> Maybe(Error) {
-	addr := address & 0x3fff
-	switch addr {
+ppu_write_to_address :: proc(
+	ppu: ^PPU,
+	cartridge: ^Cartridge,
+	data: u8,
+	address: u16,
+) -> Maybe(Error) {
+	switch address {
 	case 0x0000 ..< 0x3f00:
-		cartridge_write_to_ppu_address(console.cartridge, data, addr) or_return
+		cartridge_write_to_address(cartridge, data, address) or_return
 	case 0x3f00 ..= 0x3fff:
 		// palette RAM (32 bytes)
-		addr = addr & 0x001f
+		addr := address & 0x001f
 		// palette offset 0 is shared between
 		// background and sprites so mirror addresses
 		if addr == 0x0010 do addr = 0x0000
 		if addr == 0x0014 do addr = 0x0004
 		if addr == 0x0018 do addr = 0x0008
 		if addr == 0x001c do addr = 0x000c
-		console.ppu.palette[addr] = data
+		ppu.palette[addr] = data
 	case:
-		panic(fmt.tprintf("invalid address $%04X", addr))
+		panic(fmt.tprintf("invalid address $%04X", address))
 	}
 
 	return nil
 }
 
 @(require_results)
-ppu_read_from_address :: proc(console: ^Console, address: u16) -> u8 {
-	addr := address & 0x3fff
-	switch addr {
+ppu_read_from_address :: proc(ppu: ^PPU, cartridge: ^Cartridge, address: u16) -> u8 {
+	switch address {
 	case 0x0000 ..< 0x3f00:
 		// cannot return error here since we know that the address is
 		// within $0000-$3EFF
-		data, err := cartridge_read_from_ppu_address(console.cartridge, addr)
+		data, err := cartridge_read_from_address(cartridge, address)
 		assert(err == nil, "should never give an error here")
 		return data
 	case 0x3f00 ..= 0x3fff:
 		// palette RAM (32 bytes)
-		addr = addr & 0x001f
+		addr := address & 0x001f
 		// palette offset 0 is shared between
 		// background and sprites so mirror
 		if addr == 0x0010 do addr = 0x0000
 		if addr == 0x0014 do addr = 0x0004
 		if addr == 0x0018 do addr = 0x0008
 		if addr == 0x001c do addr = 0x000c
-		return console.ppu.palette[addr]
+		return ppu.palette[addr]
 	case:
-		panic(fmt.tprintf("invalid address $%04X", addr))
+		return 0
+		// panic(fmt.tprintf("invalid address $%04X", address))
 	}
+
 }
 
 ppu_increment_loopy_register :: proc(reg: ^Loopy_Register, vertical_increment: bool) {
@@ -349,7 +356,8 @@ ppu_increment_loopy_register :: proc(reg: ^Loopy_Register, vertical_increment: b
 }
 
 ppu_pattern_table_palette_offset_to_buffer :: proc(
-	console: ^Console,
+	ppu: ^PPU,
+	cartridge: ^Cartridge,
 	buffer: []u32,
 	table_index: int,
 ) {
@@ -364,11 +372,11 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 
 				// first plane
 				address := u16(table_index * 0x1000 + byte_offset + row + 0)
-				tile_lsb = ppu_read_from_address(console, address)
+				tile_lsb = ppu_read_from_address(ppu, cartridge, address)
 
 				// second plane
 				address = u16(table_index * 0x1000 + byte_offset + row + 8)
-				tile_msb = ppu_read_from_address(console, address)
+				tile_msb = ppu_read_from_address(ppu, cartridge, address)
 
 				for col in 0 ..< 8 {
 					pixel_palette_offset := ((tile_lsb & 0x01) << 1) | (tile_msb & 0x01)
@@ -385,12 +393,15 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 }
 
 @(require_results)
-ppu_get_color_from_palette :: proc(console: ^Console, palette_index, offset: uint) -> Color {
+ppu_get_color_from_palette :: proc(ppu: ^PPU, palette_index, offset: uint) -> Color {
 	assert(palette_index < 8, "index must be 0-7")
-	assert(offset < 4, "offset must be 0-2")
+	assert(offset < 4, "offset must be 0-3")
 
 	address := u16(0x3f00 + (palette_index << 2) + offset)
-	color_index := ppu_read_from_address(console, address)
+	// Since we wont access the cartridge, we can just pass nil.
+	// Still call ppu_read_from_address instead of accessing palette
+	// memory directly to get proper memory mirroring.
+	color_index := ppu_read_from_address(ppu, nil, address)
 	c := (ppu_palette_2C02[color_index & 0x3f])
 	return c
 
@@ -398,15 +409,16 @@ ppu_get_color_from_palette :: proc(console: ^Console, palette_index, offset: uin
 
 @(require_results)
 ppu_execute_clk_cycle :: proc(
-	console: ^Console,
+	ppu: ^PPU,
+	cartridge: ^Cartridge,
 	pixel_buffer: Maybe([]Color),
 ) -> (
 	frame_complete: bool,
+	trigger_nmi: bool,
 ) {
 	// the ppu will continue execution even when encountering read errors and
 	// simply cascade them to the caller as warnings
 
-	ppu := &console.ppu
 
 	// reset
 	ppu.is_rendering = false
@@ -466,7 +478,7 @@ ppu_execute_clk_cycle :: proc(
 			case 0:
 				shifters_load_latched_data(ppu)
 				address := 0x2000 | (u16(ppu.v) & 0x0fff)
-				ppu.bg_next_tile_id = ppu_read_from_address(console, address)
+				ppu.bg_next_tile_id = ppu_read_from_address(ppu, cartridge, address)
 			case 2:
 				address :=
 					0x23c0 |
@@ -475,7 +487,7 @@ ppu_execute_clk_cycle :: proc(
 					((ppu.v.coarse_y >> 2) << 3) |
 					(ppu.v.coarse_x >> 2)
 
-				ppu.bg_next_tile_attribute = ppu_read_from_address(console, address)
+				ppu.bg_next_tile_attribute = ppu_read_from_address(ppu, cartridge, address)
 
 				if ppu.v.coarse_y & 0b10 > 0 do ppu.bg_next_tile_attribute >>= 4
 				if ppu.v.coarse_x & 0b10 > 0 do ppu.bg_next_tile_attribute >>= 2
@@ -487,7 +499,7 @@ ppu_execute_clk_cycle :: proc(
 					ppu.v.fine_y +
 					0
 
-				ppu.bg_next_tile_lsb = ppu_read_from_address(console, address)
+				ppu.bg_next_tile_lsb = ppu_read_from_address(ppu, cartridge, address)
 			case 6:
 				address :=
 					(u16(ppu.ctrl.background_pattern_table_address) << 12) +
@@ -495,7 +507,7 @@ ppu_execute_clk_cycle :: proc(
 					ppu.v.fine_y +
 					8
 
-				ppu.bg_next_tile_msb = ppu_read_from_address(console, address)
+				ppu.bg_next_tile_msb = ppu_read_from_address(ppu, cartridge, address)
 			case 7:
 				coarse_x_increment_with_overflow(ppu)
 			}
@@ -612,8 +624,16 @@ ppu_execute_clk_cycle :: proc(
 				}
 
 				sprite_pattern_addr_hi = sprite_pattern_addr_lo + 8
-				sprite_pattern_bits_lo = ppu_read_from_address(console, sprite_pattern_addr_lo)
-				sprite_pattern_bits_hi = ppu_read_from_address(console, sprite_pattern_addr_hi)
+				sprite_pattern_bits_lo = ppu_read_from_address(
+					ppu,
+					cartridge,
+					sprite_pattern_addr_lo,
+				)
+				sprite_pattern_bits_hi = ppu_read_from_address(
+					ppu,
+					cartridge,
+					sprite_pattern_addr_hi,
+				)
 
 				if sprite.attributes.flip_horizontally {
 					sprite_pattern_bits_lo = flip_byte(sprite_pattern_bits_lo)
@@ -640,7 +660,7 @@ ppu_execute_clk_cycle :: proc(
 	if ppu.scanline == 241 && ppu.cycle == 1 {
 		ppu.status.vblank = true
 		if ppu.ctrl.vblank_nmi_enable {
-			console.cpu.interrupt = .NMI
+			trigger_nmi = true
 		}
 	}
 
@@ -720,7 +740,7 @@ ppu_execute_clk_cycle :: proc(
 
 	if buffer, ok := pixel_buffer.?; ok {
 		if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
-			c := ppu_get_color_from_palette(console, palette, pixel)
+			c := ppu_get_color_from_palette(ppu, palette, pixel)
 			buffer[ppu.scanline * 256 + ppu.cycle] = c
 		}
 	}

@@ -702,6 +702,27 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			if signed_overflow do console.cpu.status += {.VF}
 			console.cpu.acc = result
 			set_zn(console, console.cpu.acc)
+		case .LAS:
+			val, e := read(console, op_addr, instr);err = e
+			val = val & console.cpu.sp
+			console.cpu.acc = val
+			console.cpu.x = val
+			console.cpu.sp = val
+			set_zn(console, val)
+		case .TAS:
+			val := console.cpu.x & console.cpu.acc
+			console.cpu.sp = val
+			val = val & u8(op_addr >> 8) + 1
+			err = write(console, op_addr, val, instr)
+		case .SHA:
+			val := console.cpu.x & console.cpu.acc & u8(op_addr >> 8) + 1
+			err = write(console, op_addr, val, instr)
+		case .SHY:
+			val := console.cpu.y & u8(op_addr >> 8) + 1
+			err = write(console, op_addr, val, instr)
+		case .SHX:
+			val := console.cpu.x & u8(op_addr >> 8) + 1
+			err = write(console, op_addr, val, instr)
 		case .JAM:
 			// Halt execution, can do this by setting PC to itself.
 			console.cpu.pc = start_pc
@@ -911,6 +932,7 @@ get_instruction_operand_address :: proc(
 
 	return
 }
+
 
 @(require_results)
 is_page_crossed :: proc(address1, address2: u16) -> bool {

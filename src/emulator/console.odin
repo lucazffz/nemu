@@ -6,7 +6,7 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
-SUPPORTED_MAPPERS :: []int{0}
+SUPPORTED_MAPPERS :: []int{0, 1}
 
 Console :: struct {
 	cpu:         CPU,
@@ -17,7 +17,7 @@ Console :: struct {
 	// cycles: int,
 	// stalls: int,
 	// mapper:      Mapper,
-	cartridge:   Cartridge,
+	cartridge:   ^Cartridge,
 	cycle_count: int,
 	controller1: Controller,
 	controller2: Controller,
@@ -48,7 +48,7 @@ console_make :: proc(
 	ppu_palette_size := utils.interval_size(PPU_PALLETTE_RAM_INTERVAL)
 	// ppu_oam_size := utils.interval_size(PPU_OAM_INTERVAL)
 	cpu_ram_size := utils.interval_size(CPU_RAM_INTERVAL)
-	ppu_vram_size := utils.interval_size(PPU_VRAM_INTERVAL)
+	// ppu_vram_size := utils.interval_size(PPU_VRAM_INTERVAL)
 
 	console = new(Console, allocator, loc) or_return
 
@@ -85,7 +85,7 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 }
 
 // will touch all fields so can be used to reinitialize an existing console
-console_initialize_with_cartridge :: proc(console: ^Console, cartridge: Cartridge) {
+console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartridge) {
 	c: Console
 
 	c.cpu.sp = 0xfd
@@ -102,7 +102,7 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: Cartridg
 	console^ = c
 }
 
-console_vet_ines :: proc(ines: iNES20) -> Maybe(Error) {
+console_vet_ines :: proc(ines: NES20) -> Maybe(Error) {
 	if !slice.contains(SUPPORTED_MAPPERS, ines.header.mapper_number) {
 		return errorf(
 			.Mapper_Number_Not_Supported,
@@ -146,8 +146,15 @@ console_execute_clk_cycle :: proc(
 	cpu_complete: bool,
 	err: Maybe(Error),
 ) {
+	trigger_nmi: bool
 
-	frame_complete = ppu_execute_clk_cycle(console, pixel_buffer)
+	frame_complete, trigger_nmi = ppu_execute_clk_cycle(
+		&console.ppu,
+		console.cartridge,
+		pixel_buffer,
+	)
+
+	if trigger_nmi do console.cpu.interrupt = .NMI
 
 	if console.cycle_count % 3 == 0 {
 		if console.cpu.dma_transfer {
@@ -210,7 +217,7 @@ console_write_to_address :: proc(
 		// PPU I/O registers
 		// registers are mirrored every 8 bytes from $2008-$3fff
 		address_offset := u8(address & 0x7)
-		ppu_write_to_mmio_register(console, data, address_offset) or_return
+		ppu_write_to_mmio_register(&console.ppu, console.cartridge, data, address_offset) or_return
 	case 0x4000 ..< 0x4020:
 		// APU and I/O registers
 		switch address {
@@ -224,7 +231,7 @@ console_write_to_address :: proc(
 		}
 	case 0x4020 ..= 0xffff:
 		// mapper
-		cartridge_write_to_cpu_address(console.cartridge, data, address) or_return
+		cartridge_write_to_address(console.cartridge, data, address) or_return
 	case:
 		panic(fmt.tprintf("invalid address $%04X", address))
 	}
@@ -249,7 +256,11 @@ console_read_from_address :: proc(
 		// PPU I/O registers
 		// registers are mirrored every 8 bytes from $2008-$3fff
 		address_offset := u8(address & 0x7)
-		data = ppu_read_from_mmio_register(console, address_offset) or_return
+		data = ppu_read_from_mmio_register(
+			&console.ppu,
+			console.cartridge,
+			address_offset,
+		) or_return
 	case 0x4000 ..< 0x4020:
 		// APU and I/O registers
 		switch address {
@@ -262,7 +273,7 @@ console_read_from_address :: proc(
 		}
 	case 0x4020 ..= 0xffff:
 		// mapper
-		data = cartridge_read_from_cpu_address(console.cartridge, address) or_return
+		data = cartridge_read_from_address(console.cartridge, address) or_return
 	case:
 		panic(fmt.tprintf("invalid address $%04X", address))
 	}

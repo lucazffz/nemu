@@ -34,13 +34,13 @@ odin_build_flags_path = "-out:" + build_path
 # Determine build flags based on build mode
 odin_build_flags_mode = ""
 if build_mode == "release":
-    vet = "-vet-packages:nemu,emulator,utils -vet -vet-cast -vet-tabs -vet-semicolon "
+    vet = "-o:speed -vet-packages:nemu,emulator,utils -vet -vet-cast -vet-tabs -vet-semicolon "
     odin_build_flags_mode = "-no-bounds-check -disable-assert -ignore-warnings " + vet
 elif build_mode == "debug":
-    odin_build_flags_mode = "-debug "
+    odin_build_flags_mode = "-o:speed -debug "
 
 # Assemble all build flags
-odin_build_flags_base = "-o:speed -build-mode:exe "
+odin_build_flags_base = "-build-mode:exe "
 odin_build_flags = (
     odin_build_flags_base
     + odin_build_flags_mode
