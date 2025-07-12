@@ -10,6 +10,7 @@ mapper2_make :: proc() -> ^Mapper2 {
 
 	m.write_to_address = mapper2_write_to_address
 	m.read_from_address = mapper2_read_from_address
+	m.verify_ines_integrity = mapper2_verify_ines_integrity
 	m.delete = mapper2_delete
 
 	return m
@@ -19,6 +20,12 @@ mapper2_make :: proc() -> ^Mapper2 {
 mapper2_delete :: proc(mapper: ^Mapper) {
 	m := cast(^Mapper2)mapper
 	free(m)
+}
+
+@(private = "file")
+mapper2_verify_ines_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
+	h := info.header
+	return nil
 }
 
 @(private = "file")
@@ -34,12 +41,16 @@ mapper2_write_to_address :: proc(
 	switch address {
 	case 0x0000 ..< 0x2000:
 		// Mapper 2 has no CHR memory banking capabilities
-		if c.chr_rom != nil {
-			c.chr_rom[address] = data
-		} else if c.chr_ram != nil {
-			c.chr_ram[address] = data
+		if mem, read_only := cartridge_get_chr_mem(c); !read_only {
+			mem[address] = data
 		} else {
-			panic("either CHR ROM or RAM must be present")
+			err = errorf(
+				.Memory_Error,
+				"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
+				data,
+				address,
+				severity = .Warning,
+			)
 		}
 	case 0x2000 ..= 0x3eff:
 		addr := get_nametable_mirror_address(address, c.mirroring)
@@ -83,13 +94,8 @@ mapper2_read_from_address :: proc(
 	switch address {
 	case 0x0000 ..< 0x2000:
 		// Mapper 2 has no CHR memory banking capabilities
-		if c.chr_rom != nil {
-			data = c.chr_rom[address]
-		} else if c.chr_ram != nil {
-			data = c.chr_ram[address]
-		} else {
-			panic("either CHR ROM or RAM must be present")
-		}
+		mem := cartridge_get_chr_mem(c)
+		data = mem[address]
 	case 0x2000 ..= 0x3eff:
 		addr := get_nametable_mirror_address(address, c.mirroring)
 		data = c.vram[addr - 0x2000]
@@ -100,7 +106,6 @@ mapper2_read_from_address :: proc(
 		// See docs here: https://www.nesdev.org/wiki/UxROM
 		if c.prg_ram != nil {
 			data = c.prg_ram[address - 0x6000]
-
 		} else {
 			err = errorf(
 				.Memory_Error,
@@ -108,7 +113,6 @@ mapper2_read_from_address :: proc(
 				address,
 				severity = .Warning,
 			)
-
 		}
 	case 0x8000 ..= 0xffff:
 		// $8000-$BFFF: 16KB switchable PRG ROM bank

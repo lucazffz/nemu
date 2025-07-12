@@ -31,6 +31,7 @@ mapper1_make :: proc() -> ^Mapper1 {
 
 	m.write_to_address = mapper1_write_to_address
 	m.read_from_address = mapper1_read_from_address
+	m.verify_ines_integrity = mapper1_verify_ines_integrity
 	m.delete = mapper1_delete
 	return m
 }
@@ -41,6 +42,10 @@ mapper1_delete :: proc(mapper: ^Mapper) {
 	free(m)
 }
 
+@(private = "file")
+mapper1_verify_ines_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
+	return nil
+}
 @(private = "file")
 mapper1_write_to_address :: proc(
 	mapper: ^Mapper,
@@ -53,11 +58,10 @@ mapper1_write_to_address :: proc(
 	m := cast(^Mapper1)mapper
 	switch address {
 	case 0x0000 ..< 0x2000:
-		// Mapper 1 have either CHR ROM or RAM, not both
-		if c.chr_ram != nil {
+		if mem, read_only := cartridge_get_chr_mem(c); !read_only {
 			offset := map_address_to_chr_mem_offset(m^, address)
-			c.chr_ram[offset] = data
-		} else if c.chr_rom != nil {
+			mem[offset] = data
+		} else {
 			err = errorf(
 				.Memory_Error,
 				"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
@@ -65,8 +69,6 @@ mapper1_write_to_address :: proc(
 				address,
 				severity = .Warning,
 			)
-		} else {
-			panic("either CHR ROM or RAM must be present")
 		}
 	case 0x2000 ..= 0x3eff:
 		addr := get_nametable_mirror_address(address, c.mirroring)
@@ -104,18 +106,9 @@ mapper1_read_from_address :: proc(
 	m := cast(^Mapper1)mapper
 	switch address {
 	case 0x0000 ..< 0x2000:
-		chr_mem: []u8
-		// Mapper 1 have either CHR ROM or RAM, not both
-		if c.chr_rom != nil {
-			chr_mem = c.chr_rom
-		} else if c.chr_ram != nil {
-			chr_mem = c.chr_ram
-		} else {
-			panic("either CHR ROM or RAM must be present")
-		}
-
 		offset := map_address_to_chr_mem_offset(m^, address)
-		data = chr_mem[offset]
+		mem := cartridge_get_chr_mem(c)
+		data = mem[offset]
 	case 0x2000 ..= 0x3eff:
 		addr := get_nametable_mirror_address(address, c.mirroring)
 		data = c.vram[addr - 0x2000]

@@ -10,15 +10,25 @@ mapper3_make :: proc() -> ^Mapper3 {
 
 	m.write_to_address = mapper3_write_to_address
 	m.read_from_address = mapper3_read_from_address
+	m.verify_ines_integrity = mapper3_verify_ines_integrity
 	m.delete = mapper3_delete
 
 	return m
 }
 
 @(private = "file")
+mapper3_verify_ines_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
+	return nil
+}
+
+@(private = "file")
 mapper3_delete :: proc(mapper: ^Mapper) {
 	m := cast(^Mapper3)mapper
 	free(m)
+}
+
+mapper3_check_compatability :: proc(header: NES20_Header) -> Maybe(Error) {
+	return nil
 }
 
 @(private = "file")

@@ -2,6 +2,7 @@ package emulator
 
 import "base:runtime"
 import "core:os"
+import "core:slice"
 
 KB :: 1024 // one kibibyte
 
@@ -9,26 +10,34 @@ Cartridge :: struct {
 	mapper:           ^Mapper,
 	mapper_number:    int,
 	submapper_number: int,
-	ines_variant:     iNES_File_Variant,
-	ines_header:      NES20_Header,
+	ines_info:        iNES_Info,
 	vram:             []u8,
 	prg_rom:          []u8,
-	chr_rom:          []u8,
 	prg_ram:          []u8, // used as SRAM or WRAM
+	// Cartridges typically use either CHR RAM or CHR ROM, not both.
+	// Mappers are agnotisc to weather ROM or RAM is present. However,
+	// they are stored seperately here in case some special use case would
+	// arise where they need to be treated seperately.
+	chr_rom:          []u8,
 	chr_ram:          []u8,
-	// @todo nvram not used by any official cartridges, perhaps remove
 	// prg_nvram:        []u8,
 	// chr_nvram:        []u8,
 	battery_present:  bool,
 	mirroring:        Nametable_Mirroring,
 }
 
-Mapper :: struct {
-	write_to_address:  proc(m: ^Mapper, c: ^Cartridge, data: u8, address: u16) -> Maybe(Error),
-	read_from_address: proc(m: ^Mapper, c: ^Cartridge, address: u16) -> (u8, Maybe(Error)),
-	delete:            proc(m: ^Mapper),
+@(require_results)
+cartridge_get_chr_mem :: proc(cartridge: ^Cartridge) -> (mem: []u8, read_only: bool) #optional_ok {
+	if cartridge.chr_rom != nil {
+		return cartridge.chr_rom, true
+	} else if cartridge.chr_ram != nil {
+		return cartridge.chr_ram, false
+	}
+
+	panic("either CHR ROM or RAM have to be present")
 }
 
+@(require_results)
 cartridge_persistant_ram_present :: proc(cartridge: Cartridge) -> bool {
 	// Standard NES mappers that use SRAM (save/static RAM) for persistent
 	// game saves always rely on a battery. A battery is generally
@@ -36,6 +45,7 @@ cartridge_persistant_ram_present :: proc(cartridge: Cartridge) -> bool {
 	return cartridge.battery_present && cartridge.prg_ram != nil
 }
 
+@(require_results)
 cartridge_nametable_arrangement_to_mirroring :: proc(
 	arrangement: Nametable_Arrangement,
 ) -> (
@@ -51,6 +61,7 @@ cartridge_nametable_arrangement_to_mirroring :: proc(
 	return
 }
 
+@(require_results)
 cartridge_make_from_filename :: proc(filename: string) -> (^Cartridge, Maybe(Error)) {
 	rom, err := os.read_entire_file_or_err(filename)
 	if err != nil {
@@ -61,7 +72,6 @@ cartridge_make_from_filename :: proc(filename: string) -> (^Cartridge, Maybe(Err
 			err,
 			severity = .Fatal,
 		)
-
 	}
 
 	defer delete(rom)
@@ -75,26 +85,20 @@ cartridge_make_from_filename :: proc(filename: string) -> (^Cartridge, Maybe(Err
 		)
 	}
 
-	ines_variant := ines_determine_format_variant_from_bytes(rom)
-	if ines_variant != .NES_20 && ines_variant != .iNES {
-		return nil, errorf(
-			.iNES_Error,
-			"file '%s' is of iNES variant '%v', only iNES 1.0 and 2.0 supported",
-			filename,
-			ines_variant,
-			severity = .Fatal,
-		)
+	ines := ines_get_from_bytes(rom)
+
+	info := ines_get_info(ines)
+	if err := ines_check_compatability(info); err != nil {
+		return nil, err
 	}
 
-	ines := get_ines_from_bytes(rom)
-
-
-	if err := console_vet_ines(ines); err != nil {
+	if err := ines_check_integrity(info); err != nil {
 		return nil, err
 	}
 
 	return cartridge_make_from_ines(ines), nil
 }
+
 
 @(require_results)
 cartridge_make_from_ines :: proc(
@@ -112,8 +116,7 @@ cartridge_make_from_ines :: proc(
 	c.submapper_number = ines.header.submapper_number
 	c.mirroring = cartridge_nametable_arrangement_to_mirroring(ines.header.nametable_arrangement)
 	c.battery_present = ines.header.battery_present
-	c.ines_variant = ines.file_variant
-	c.ines_header = ines.header
+	c.ines_info = ines_get_info(ines)
 
 	allocate_cartridge_memory(c, ines, allocator, loc) or_return
 
@@ -121,24 +124,9 @@ cartridge_make_from_ines :: proc(
 	copy_slice(c.prg_rom, ines.prg_rom)
 	copy_slice(c.chr_rom, ines.chr_rom)
 
-	assign_mapper(c, c.mapper_number)
+	c.mapper = mapper_make_from_number(c.mapper_number)
 
 	return
-
-	assign_mapper :: proc(c: ^Cartridge, mapper_number: int) {
-		switch mapper_number {
-		case 0:
-			c.mapper = &mapper0_make().m
-		case 1:
-			c.mapper = &mapper1_make().m
-		case 2:
-			c.mapper = &mapper2_make().m
-		case 3:
-			c.mapper = &mapper3_make().m
-		case:
-			panic("mapper not supported")
-		}
-	}
 
 	allocate_cartridge_memory :: proc(
 		c: ^Cartridge,
@@ -154,23 +142,16 @@ cartridge_make_from_ines :: proc(
 		if h.prg_rom_size != 0 {
 			c.prg_rom = make_slice([]u8, h.prg_rom_size, allocator, loc) or_return
 		}
-		// if h.prg_nvram_size != 0 {
-		// 	c.prg_nvram = make_slice([]u8, h.prg_nvram_size, allocator, loc) or_return
-		// }
 		if h.chr_rom_size != 0 {
 			c.chr_rom = make_slice([]u8, h.chr_rom_size, allocator, loc) or_return
 		}
 		if h.chr_ram_size != 0 {
 			c.chr_ram = make_slice([]u8, h.chr_ram_size, allocator, loc) or_return
 		}
-		// if h.chr_nvram_size != 0 {
-		// 	c.chr_nvram = make_slice([]u8, h.chr_nvram_size, allocator, loc) or_return
-		// }
 
 		return nil
 	}
 }
-
 
 cartridge_delete :: proc(
 	cartridge: ^Cartridge,
@@ -180,16 +161,15 @@ cartridge_delete :: proc(
 	delete_slice(cartridge.vram, allocator, loc) or_return
 	delete_slice(cartridge.prg_rom, allocator, loc) or_return
 	delete_slice(cartridge.prg_ram, allocator, loc) or_return
-	// delete_slice(cartridge.prg_nvram, allocator, loc) or_return
 	delete_slice(cartridge.chr_rom, allocator, loc) or_return
 	delete_slice(cartridge.chr_ram, allocator, loc) or_return
-	// delete_slice(cartridge.chr_nvram, allocator, loc) or_return
 	cartridge.mapper->delete()
 
 	free(cartridge)
 
 	return .None
 }
+
 
 @(require_results)
 cartridge_read_from_address :: proc(
@@ -235,65 +215,5 @@ cartridge_write_to_address :: proc(
 	}
 
 	return
-}
-
-Nametable_Mirroring :: enum {
-	Horizontal,
-	Vertical,
-	Single_Screen_A,
-	Single_Screen_B,
-	Four_Screen,
-}
-
-get_nametable_mirror_address :: proc(address: u16, mirroring: Nametable_Mirroring) -> u16 {
-	addr := address & 0x3fff // keep lower 14 bits
-
-	// handle mirroring of entire nametable region ($3000-$3eff) to
-	// primary nametable region ($2000-$2fff)
-	if addr >= 0x3000 && addr <= 0x3eff {
-		addr -= 0x1000
-	}
-
-	// not within nametable region, return masked address
-	if !(addr >= 0x2000 && addr <= 0x2fff) do return addr
-	// determine which logical nametable the address falls into
-	// each nametable is 1KB
-	// 0x000-0x3FF -> NT0
-	// 0x400-0x7FF -> NT1
-	// 0x800-0xBFF -> NT2
-	// 0xC00-0xFFF -> NT3
-	offset := addr - 0x2000
-	nametable_bank := offset / 1024
-	bank_offset := offset % 1024
-
-	switch mirroring {
-	case .Horizontal:
-		if nametable_bank == 0 || nametable_bank == 1 {
-			// NT0 or NT1 (mirrors NT0) map to the first physical 1KB bank
-			return 0x2000 + bank_offset
-		} else {
-			// NT2 or NT3 (mirrors NT2) map to the second physical 1KB bank
-			return 0x2400 + bank_offset
-		}
-	case .Vertical:
-		if nametable_bank == 0 || nametable_bank == 2 {
-			// NT0 or NT2 (mirrors NT0) map to the first physical 1KB bank
-			return 0x2000 + bank_offset
-		} else {
-			// NT1 or NT3 (mirrors NT1) map to the second physical 1KB bank
-			return 0x2400 + bank_offset
-		}
-	case .Single_Screen_A:
-		// all nametables map to the first physical 1KB bank ($2000-$23FF)
-		return 0x2000 + bank_offset
-	case .Single_Screen_B:
-		// all nametables map to the second physical 1KB bank ($2400-$27FF)
-		return 0x2400 + bank_offset
-	case .Four_Screen:
-		// no mirroring, all 4 logical nametables are distinct
-		return addr
-	}
-
-	return addr
 }
 

@@ -749,7 +749,7 @@ render_debug_ui :: proc() {
 
 	if show_rom_info {
 		if imgui.Begin("ROM Info", &show_rom_info, {.AlwaysAutoResize, .NoDocking, .NoCollapse}) {
-			imgui.Text("%s", emu.ines_header_to_string(g.emulator.console.cartridge.ines_header))
+			imgui.Text("%s", emu.ines_info_to_string(g.emulator.console.cartridge.ines_info))
 			imgui.End()
 		}
 	}

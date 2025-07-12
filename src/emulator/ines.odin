@@ -69,53 +69,51 @@ iNES_File_Variant :: enum {
 	NES_20,
 }
 
-ines_vet :: proc(ines: NES20) -> Maybe(Error) {
-	// switch ines.header.mapper_number {
-	// case 0:
-	// 	if ines.header.prg_ram_size != 2 * KB &&
-	// 	   ines.header.prg_ram_size != 4 * KB &&
-	// 	   ines.header.prg_ram_size != 0 {
-	// 		return errorf(
-	// 			.Invalid_PRG_RAM_Size,
-	// 			"invalid PRG-RAM size of %d bytes, must be either 0KB, 2KB or 4KB for mapper 0",
-	// 			ines.header.prg_ram_size,
-	// 		)
-	// 	}
+iNES_Info :: struct {
+	header:       NES20_Header,
+	file_variant: iNES_File_Variant,
+}
 
-	// 	if ines.header.prg_rom_size != 16 * KB && ines.header.prg_rom_size != 32 * KB {
-	// 		return errorf(
-	// 			.Invalid_PRG_ROM_Size,
-	// 			"invalid PRG-ROM size of %dKB, must be either 16KB or 32KB for mapper 0",
-	// 			ines.header.prg_rom_size,
-	// 		)
-	// 	}
+ines_check_compatability :: proc(info: iNES_Info) -> Maybe(Error) {
+	h := info.header
+	if !slice.contains(SUPPORTED_MAPPERS, h.mapper_number) {
+		return errorf(.iNES_Error, "mapper %d is not supported", h.mapper_number)
+	}
 
-	// 	if ines.header.prg_nvram_size > 0 {
-	// 		return error(.PRG_NVRAM_Not_Supported, "PRG-NVRAM not supported for mapper 0")
-	// 	}
+	if h.tv_system != .NTSC {
+		return errorf(.iNES_Error, "TV system %v is not supported", h.tv_system)
+	}
 
-	// 	if ines.header.chr_rom_size != 8 * KB {
-	// 		return errorf(
-	// 			.Invalid_CHR_ROM_Size,
-	// 			"invalid CHR-ROM size of %dKB, must be 8KB for mapper 0",
-	// 			ines.header.chr_rom_size,
-	// 		)
-	// 	}
+	if _, ok := h.console_type.(Nintendo_Entertainment_System); !ok {
+		return errorf(.iNES_Error, "console system %v is not supported", h.console_type)
+	}
 
-	// 	if ines.header.chr_ram_size > 0 {
-	// 		return error(.CHR_RAM_Not_Supported, "CHAR-RAM not supported for mapper 0")
-	// 	}
+	if h.cpu_ppu_timing_mode != .RP2C02 {
+		return errorf(.iNES_Error, "timing mode %v is not supported", h.cpu_ppu_timing_mode)
+	}
 
-	// 	if ines.header.chr_nvram_size > 0 {
-	// 		return error(.CHR_NVRAM_Not_Supported, "CHR-NVRAM not supported for mapper 0")
-	// 	}
-	// }
+	if info.file_variant != .NES_20 && info.file_variant != .iNES {
+		return errorf(
+			.iNES_Error,
+			"is of iNES variant '%v', only iNES 1.0 and 2.0 supported",
+			info.file_variant,
+			severity = .Fatal,
+		)
+	}
+
 	return nil
 }
 
+ines_check_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
+	mapper := mapper_make_from_number(info.header.mapper_number)
+	defer mapper->delete()
+	return mapper.verify_ines_integrity(info)
+}
+
 @(require_results)
-ines_header_to_string :: proc(header: NES20_Header) -> string {
-	template := `Mapper Number:                %d
+ines_info_to_string :: proc(info: iNES_Info) -> string {
+	template := `File Variant:                 %v
+Mapper Number:                %d
 Mapper Subnumber:             %d
 
 Nametable Arrangement:        %v
@@ -141,9 +139,10 @@ Miscellanious ROM Num:        %d
 Default Expansion Device:     %d`
 
 
-	h := header
+	h := info.header
 	return fmt.tprintfln(
 		template,
+		info.file_variant,
 		h.mapper_number,
 		h.submapper_number,
 		h.nametable_arrangement,
@@ -177,8 +176,13 @@ Default Expansion Device:     %d`
 	}
 }
 
+
+ines_get_info :: proc(ines: NES20) -> iNES_Info {
+	return iNES_Info{header = ines.header, file_variant = ines.file_variant}
+}
+
 @(require_results)
-get_ines_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_ok {
+ines_get_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_ok {
 	if ok = ines_is_nes_file_format(data); !ok do return
 
 	variant := ines_determine_format_variant_from_bytes(data)

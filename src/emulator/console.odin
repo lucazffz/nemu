@@ -6,8 +6,6 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
-SUPPORTED_MAPPERS :: []int{0, 1, 2, 3}
-
 Console :: struct {
 	cpu:         CPU,
 	ppu:         PPU,
@@ -102,29 +100,6 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 	console^ = c
 }
 
-console_vet_ines :: proc(ines: NES20) -> Maybe(Error) {
-	if !slice.contains(SUPPORTED_MAPPERS, ines.header.mapper_number) {
-		return errorf(.iNES_Error, "mapper %d is not supported", ines.header.mapper_number)
-	}
-
-	if ines.header.tv_system != .NTSC {
-		return errorf(.iNES_Error, "TV system %v is not supported", ines.header.tv_system)
-	}
-
-	if _, ok := ines.header.console_type.(Nintendo_Entertainment_System); !ok {
-		return errorf(.iNES_Error, "console system %v is not supported", ines.header.console_type)
-	}
-
-	if ines.header.cpu_ppu_timing_mode != .RP2C02 {
-		return errorf(
-			.iNES_Error,
-			"timing mode %v is not supported",
-			ines.header.cpu_ppu_timing_mode,
-		)
-	}
-
-	return ines_vet(ines)
-}
 
 console_execute_clk_cycle :: proc(
 	console: ^Console,
