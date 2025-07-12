@@ -6,7 +6,7 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
-SUPPORTED_MAPPERS :: []int{0, 1, 2}
+SUPPORTED_MAPPERS :: []int{0, 1, 2, 3}
 
 Console :: struct {
 	cpu:         CPU,

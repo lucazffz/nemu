@@ -147,23 +147,16 @@ reset :: proc(m: ^Mapper1) {
 
 @(private = "file")
 write_to_load_register :: proc(m: ^Mapper1, c: ^Cartridge, data: u8, address: u16) {
-	// log.info(m.prg_bank_register)
-	// mirroring: Nametable_Mirroring
-
 	// reset shift register if bit 7 of data is set
 	if (data & 0x80) == 0x80 {
 		reset(m)
 	} else {
 		complete := m.load_register & 0x1 == 1
 		m.load_register = (m.load_register >> 1) | ((data & 0x01) << 4)
-		// m.load_register_count += 1
 		if complete {
 			// choose register to write to based on address bit 13 and 14
 			switch (address >> 13) & 0x03 {
 			case 0:
-				// m.control.nametable_arrangement = m.load_register & 0x3
-				// m.control.prg_rom_bank_mode = (m.load_register >> 2) & 0x3
-				// m.control.chr_rom_bank_mode = (m.load_register >> 4) & 0x1
 				m.control = auto_cast (m.load_register & 0x1f)
 				// set cartridge mirroring mode based in nametable
 				// arrangement in mapper 1 control register
@@ -189,10 +182,7 @@ write_to_load_register :: proc(m: ^Mapper1, c: ^Cartridge, data: u8, address: u1
 
 			m.load_register = 0x10 // clear register after 5th write
 		}
-
 	}
-
-	// return mirroring
 }
 
 @(private = "file")

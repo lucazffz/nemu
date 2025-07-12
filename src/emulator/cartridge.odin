@@ -133,6 +133,8 @@ cartridge_make_from_ines :: proc(
 			c.mapper = &mapper1_make().m
 		case 2:
 			c.mapper = &mapper2_make().m
+		case 3:
+			c.mapper = &mapper3_make().m
 		case:
 			panic("mapper not supported")
 		}
