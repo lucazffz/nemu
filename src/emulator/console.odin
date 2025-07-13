@@ -12,13 +12,11 @@ Console :: struct {
 	// apu:    APU,
 	// 2 KB of internal ram ($0000 - $07FF)
 	ram:         []u8,
-	// cycles: int,
-	// stalls: int,
-	// mapper:      Mapper,
+	palette:     ^Palette,
 	cartridge:   ^Cartridge,
-	cycle_count: int,
 	controller1: Controller,
 	controller2: Controller,
+	cycle_count: int,
 }
 
 CPU_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1fff, .Closed} // 2KB ram mirrored 4 times
@@ -36,6 +34,7 @@ PPU_OAM_INTERVAL :: utils.Interval(u8){0x00, 0xff, .Closed}
 // will not initialize default values, use console_init
 @(require_results)
 console_make :: proc(
+	palette: Maybe(^Palette) = nil,
 	allocator := context.allocator,
 	loc := #caller_location,
 ) -> (
@@ -44,18 +43,19 @@ console_make :: proc(
 ) #optional_allocator_error {
 	// dont check error, know that intervals are closed
 	ppu_palette_size := utils.interval_size(PPU_PALLETTE_RAM_INTERVAL)
-	// ppu_oam_size := utils.interval_size(PPU_OAM_INTERVAL)
 	cpu_ram_size := utils.interval_size(CPU_RAM_INTERVAL)
-	// ppu_vram_size := utils.interval_size(PPU_VRAM_INTERVAL)
 
 	console = new(Console, allocator, loc) or_return
+
+	if pal, ok := palette.?; ok {
+		console.palette = pal
+	} else {
+		console.palette = palette_make_from_bytes(PALETTE_DEFAULT_DATA, 0)
+	}
 
 	// pattern table and nametable are stored in cartridge (mapper) so
 	// dont need to allocate them here
 	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
-	// console.ppu.oam.raw_data = make_slice([]u8, ppu_oam_size, allocator, loc) or_return
-	// console.ppu.vram = make_slice([]u8, ppu_vram_size, allocator, loc) or_return
-	// console.ppu.pixel_buffer = make_slice([]Color, 256 * 240, allocator, loc) or_return
 	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
 
 	return
@@ -68,12 +68,10 @@ console_delete :: proc(
 	loc := #caller_location,
 ) -> runtime.Allocator_Error {
 	delete_slice(console.ram, allocator, loc) or_return
-	// delete_slice(console.ppu.oam.raw_data, allocator, loc) or_return
 	delete_slice(console.ppu.palette, allocator, loc) or_return
-	// delete_slice(console.ppu.vram, allocator, loc) or_return
-
+	palette_delete(console.palette)
 	cartridge_delete(console.cartridge)
-	// delete_slice(console.ppu.pixel_buffer, allocator, loc) or_return
+
 	free(console, allocator, loc) or_return
 	return .None
 }
@@ -90,10 +88,10 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 	c.cpu.pc = 0xc000
 	c.cpu.status = {.IF}
 
-	// assign slices
+	// reassign pointers
 	c.ram = console.ram
-	// c.ppu.vram = console.ppu.vram
 	c.ppu.palette = console.ppu.palette
+	c.palette = console.palette
 
 	c.cartridge = cartridge
 
@@ -114,6 +112,7 @@ console_execute_clk_cycle :: proc(
 	frame_complete, trigger_nmi = ppu_execute_clk_cycle(
 		&console.ppu,
 		console.cartridge,
+		console.palette,
 		pixel_buffer,
 	)
 

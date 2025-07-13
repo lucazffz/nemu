@@ -1,6 +1,7 @@
 package emulator
 
 import "core:fmt"
+import "core:log"
 import "core:slice"
 
 Color :: distinct [4]u8
@@ -393,16 +394,16 @@ ppu_pattern_table_palette_offset_to_buffer :: proc(
 }
 
 @(require_results)
-ppu_get_color_from_palette :: proc(ppu: ^PPU, palette_index, offset: uint) -> Color {
-	assert(palette_index < 8, "index must be 0-7")
+ppu_get_color_from_palette :: proc(ppu: ^PPU, palette: ^Palette, index, offset: uint) -> Color {
+	assert(index < 8, "index must be 0-7")
 	assert(offset < 4, "offset must be 0-3")
 
-	address := u16(0x3f00 + (palette_index << 2) + offset)
+	address := u16(0x3f00 + (index << 2) + offset)
 	// Since we wont access the cartridge, we can just pass nil.
 	// Still call ppu_read_from_address instead of accessing palette
 	// memory directly to get proper memory mirroring.
 	color_index := ppu_read_from_address(ppu, nil, address)
-	c := (ppu_palette_2C02[color_index & 0x3f])
+	c := (palette[color_index & 0x3f])
 	return c
 
 }
@@ -411,6 +412,7 @@ ppu_get_color_from_palette :: proc(ppu: ^PPU, palette_index, offset: uint) -> Co
 ppu_execute_clk_cycle :: proc(
 	ppu: ^PPU,
 	cartridge: ^Cartridge,
+	palette: ^Palette,
 	pixel_buffer: Maybe([]Color),
 ) -> (
 	frame_complete: bool,
@@ -703,24 +705,24 @@ ppu_execute_clk_cycle :: proc(
 		bg_palette = (bg_pal1 << 1) | bg_pal0
 	}
 
-	pixel, palette: uint
+	pixel, palette_idx: uint
 
 	if bg_pixel == 0 && fg_pixel == 0 {
 		pixel = 0x0
-		palette = 0x0
+		palette_idx = 0x0
 	} else if bg_pixel == 0 && fg_pixel > 0 {
 		pixel = fg_pixel
-		palette = fg_palette
+		palette_idx = fg_palette
 	} else if bg_pixel > 0 && fg_pixel == 0 {
 		pixel = bg_pixel
-		palette = bg_palette
+		palette_idx = bg_palette
 	} else if bg_pixel > 0 && bg_pixel > 0 {
 		if fg_priority == 0 {
 			pixel = fg_pixel
-			palette = fg_palette
+			palette_idx = fg_palette
 		} else {
 			pixel = bg_pixel
-			palette = bg_palette
+			palette_idx = bg_palette
 		}
 
 		if ppu.sprite_zero_hit_possible && ppu.sprite_zero_being_rendered {
@@ -740,7 +742,7 @@ ppu_execute_clk_cycle :: proc(
 
 	if buffer, ok := pixel_buffer.?; ok {
 		if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
-			c := ppu_get_color_from_palette(ppu, palette, pixel)
+			c := ppu_get_color_from_palette(ppu, palette, palette_idx, pixel)
 			buffer[ppu.scanline * 256 + ppu.cycle] = c
 		}
 	}

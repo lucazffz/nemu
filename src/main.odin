@@ -153,17 +153,15 @@ main :: proc() {
 
 
 initialize :: proc() {
-	cartridge, err := emu.cartridge_make_from_filename(g.rom_file_path)
-	if err != nil {
+	if cartridge, err := emu.cartridge_make_from_filename(g.rom_file_path); err != nil {
 		emu.error_log(err.?)
 		os.exit(1)
+	} else {
+		console := emu.console_make()
+		emu.console_initialize_with_cartridge(console, cartridge)
+		_ = emu.console_reset(console)
+		g.emulator.console = console
 	}
-
-	g.emulator.console = emu.console_make()
-
-	emu.console_initialize_with_cartridge(g.emulator.console, cartridge)
-	_ = emu.console_reset(g.emulator.console)
-
 
 	g.emulator.target_frame_time = time.Second / 60
 
@@ -219,7 +217,7 @@ initialize :: proc() {
 	g.debug_ui.pattern_table_0_texture = rl.LoadTextureFromImage(pattern_table_0_img)
 	g.debug_ui.pattern_table_1_texture = rl.LoadTextureFromImage(pattern_table_1_img)
 
-	g.emulator.state = .Pause
+	g.emulator.state = .Run
 }
 
 atomic_buffer_swap :: proc(buffer_1: ^[]$E, buffer_2: ^[]E, mutex: ^sync.Mutex) {
@@ -242,7 +240,6 @@ shutdown :: proc() {
 	rl.CloseWindow()
 
 	emu.console_delete(g.emulator.console)
-	// emu.mapper_delete(g.emulator.mapper)
 
 	delete(g.view.front_buffer)
 	delete(g.view.back_buffer)
@@ -1071,6 +1068,7 @@ render_debug_ui :: proc() {
 				} else {
 					col := emu.ppu_get_color_from_palette(
 						&g.emulator.console.ppu,
+						g.emulator.console.palette,
 						uint(palette_index),
 						uint(val),
 					)
@@ -1233,7 +1231,12 @@ render_debug_ui :: proc() {
 	}
 
 	get_palette_color :: proc(#any_int palette_index, offset: uint) -> u32 {
-		c := emu.ppu_get_color_from_palette(&g.emulator.console.ppu, palette_index, offset)
+		c := emu.ppu_get_color_from_palette(
+			&g.emulator.console.ppu,
+			g.emulator.console.palette,
+			palette_index,
+			offset,
+		)
 		return transmute(u32)c
 	}
 }

@@ -24,41 +24,41 @@ mapper0_delete :: proc(mapper: ^Mapper) {
 mapper0_verify_ines_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
 	h := info.header
 
-	if h.prg_ram_size != 2 * KB && h.prg_ram_size != 4 * KB && h.prg_ram_size != 0 {
-		return errorf(
-			.iNES_Error,
-			"invalid PRG-RAM size of %dKB , must be either 0KB, 2KB or 4KB for mapper 0",
-			h.prg_ram_size / KB,
-		)
-	}
-
-	if h.prg_rom_size != 16 * KB && h.prg_rom_size != 32 * KB {
-		return errorf(
-			.iNES_Error,
-			"invalid PRG-ROM size of %dKB, must be either 16KB or 32KB for mapper 0",
-			h.prg_rom_size / KB,
-		)
-	}
-
-	// if h.prg_nvram_size > 0 {
-	// 	return error(.iNES_Error, "PRG-NVRAM not supported for mapper 0")
+	// if h.prg_ram_size != 2 * KB && h.prg_ram_size != 4 * KB && h.prg_ram_size != 0 {
+	// 	return errorf(
+	// 		.iNES_Error,
+	// 		"invalid PRG-RAM size of %dKB , must be either 0KB, 2KB or 4KB for mapper 0",
+	// 		h.prg_ram_size / KB,
+	// 	)
 	// }
 
-	if h.chr_rom_size != 8 * KB {
-		return errorf(
-			.iNES_Error,
-			"invalid CHR-ROM size of %dKB, must be 8KB for mapper 0",
-			h.chr_rom_size / KB,
-		)
-	}
-
-	if h.chr_ram_size > 0 {
-		return error(.iNES_Error, "CHR-RAM not supported for mapper 0")
-	}
-
-	// if h.chr_nvram_size > 0 {
-	// 	return error(.iNES_Error, "CHR-NVRAM not supported for mapper 0")
+	// if h.prg_rom_size != 16 * KB && h.prg_rom_size != 32 * KB {
+	// 	return errorf(
+	// 		.iNES_Error,
+	// 		"invalid PRG-ROM size of %dKB, must be either 16KB or 32KB for mapper 0",
+	// 		h.prg_rom_size / KB,
+	// 	)
 	// }
+
+	// // if h.prg_nvram_size > 0 {
+	// // 	return error(.iNES_Error, "PRG-NVRAM not supported for mapper 0")
+	// // }
+
+	// if h.chr_rom_size != 8 * KB {
+	// 	return errorf(
+	// 		.iNES_Error,
+	// 		"invalid CHR-ROM size of %dKB, must be 8KB for mapper 0",
+	// 		h.chr_rom_size / KB,
+	// 	)
+	// }
+
+	// if h.chr_ram_size > 0 {
+	// 	return error(.iNES_Error, "CHR-RAM not supported for mapper 0")
+	// }
+
+	// // if h.chr_nvram_size > 0 {
+	// // 	return error(.iNES_Error, "CHR-NVRAM not supported for mapper 0")
+	// // }
 
 	return nil
 }

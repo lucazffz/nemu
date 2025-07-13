@@ -176,7 +176,6 @@ Default Expansion Device:     %d`
 	}
 }
 
-
 ines_get_info :: proc(ines: NES20) -> iNES_Info {
 	return iNES_Info{header = ines.header, file_variant = ines.file_variant}
 }

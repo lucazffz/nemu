@@ -1,6 +1,6 @@
 package emulator
 
-SUPPORTED_MAPPERS :: []int{0, 1, 2, 3}
+SUPPORTED_MAPPERS :: []int{0, 1, 2, 3, 4}
 
 Mapper :: struct {
 	write_to_address:      proc(m: ^Mapper, c: ^Cartridge, data: u8, address: u16) -> Maybe(Error),
@@ -27,6 +27,8 @@ mapper_make_from_number :: proc(mapper_number: int) -> ^Mapper {
 		return &mapper2_make().m
 	case 3:
 		return &mapper3_make().m
+	case 4:
+		return &mapper4_make().m
 	case:
 		panic("mapper not supported")
 	}
