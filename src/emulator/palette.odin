@@ -26,6 +26,10 @@ palette_make_from_filename :: proc(filename: string, hue_shift: int) -> (^Palett
 	return pal, nil
 }
 
+palette_make_default :: proc() -> ^Palette {
+	return palette_make_from_bytes(PALETTE_DEFAULT_DATA, 0)
+}
+
 palette_make_from_bytes :: proc(data: []byte, hue_shift: int) -> ^Palette {
 	PALETTE_SIZE_BYTES :: 64 * 3 // 64 colors in RGB8 format
 	// One .pal file usually contains multiple (normally 8) palettes with

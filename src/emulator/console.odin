@@ -50,7 +50,7 @@ console_make :: proc(
 	if pal, ok := palette.?; ok {
 		console.palette = pal
 	} else {
-		console.palette = palette_make_from_bytes(PALETTE_DEFAULT_DATA, 0)
+		console.palette = palette_make_default()
 	}
 
 	// pattern table and nametable are stored in cartridge (mapper) so
