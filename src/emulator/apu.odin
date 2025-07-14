@@ -1,1 +1,5 @@
 package emulator
+
+APU :: struct {
+	
+}

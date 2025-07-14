@@ -8,6 +8,7 @@ PALETTES_DIR_PATH :: #directory + "../assets/palettes/"
 
 PALETTE_DEFAULT_DATA :: #load(PALETTES_DIR_PATH + "2C02G_wiki.pal")
 
+@(require_results)
 palette_make_from_filename :: proc(filename: string, hue_shift: int) -> (^Palette, Maybe(Error)) {
 	data, err := os.read_entire_file_or_err(filename)
 	if err != nil {
@@ -26,10 +27,12 @@ palette_make_from_filename :: proc(filename: string, hue_shift: int) -> (^Palett
 	return pal, nil
 }
 
+@(require_results)
 palette_make_default :: proc() -> ^Palette {
 	return palette_make_from_bytes(PALETTE_DEFAULT_DATA, 0)
 }
 
+@(require_results)
 palette_make_from_bytes :: proc(data: []byte, hue_shift: int) -> ^Palette {
 	PALETTE_SIZE_BYTES :: 64 * 3 // 64 colors in RGB8 format
 	// One .pal file usually contains multiple (normally 8) palettes with

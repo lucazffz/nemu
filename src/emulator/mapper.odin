@@ -9,13 +9,6 @@ Mapper :: struct {
 	delete:                proc(m: ^Mapper),
 }
 
-Nametable_Mirroring :: enum {
-	Horizontal,
-	Vertical,
-	Single_Screen_A,
-	Single_Screen_B,
-	Four_Screen,
-}
 
 mapper_make_from_number :: proc(mapper_number: int) -> ^Mapper {
 	switch mapper_number {

@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:log"
 import "core:slice"
 
+// RGBA8 format
 Color :: distinct [4]u8
 
 Loopy_Register :: bit_field u16 {

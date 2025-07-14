@@ -40,7 +40,6 @@ Emulation_State :: enum {
 // Vec2 :: [2]f32
 // Vec3 :: [2]f32
 
-
 // All global program state is organized within this variable
 g: struct #no_copy {
 	rom_file_path:  string,

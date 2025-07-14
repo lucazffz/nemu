@@ -26,6 +26,14 @@ Cartridge :: struct {
 	mirroring:        Nametable_Mirroring,
 }
 
+Nametable_Mirroring :: enum {
+	Horizontal,
+	Vertical,
+	Single_Screen_A,
+	Single_Screen_B,
+	Four_Screen,
+}
+
 @(require_results)
 cartridge_get_chr_mem :: proc(cartridge: ^Cartridge) -> (mem: []u8, read_only: bool) #optional_ok {
 	if cartridge.chr_rom != nil {
@@ -51,6 +59,9 @@ cartridge_nametable_arrangement_to_mirroring :: proc(
 ) -> (
 	mirroring: Nametable_Mirroring,
 ) {
+	// Vertical nametable arrangement causes horizontal nametable
+	// mirroring and likwise horizontal nametable arrangement
+	// causes vertical nametable mirroring.
 	switch arrangement {
 	case .Vertical:
 		mirroring = .Horizontal
@@ -62,41 +73,32 @@ cartridge_nametable_arrangement_to_mirroring :: proc(
 }
 
 @(require_results)
-cartridge_make_from_filename :: proc(filename: string) -> (^Cartridge, Maybe(Error)) {
-	rom, err := os.read_entire_file_or_err(filename)
-	if err != nil {
-		return nil, errorf(
-			.IO_Error,
-			"could not open file '%s', %v",
-			filename,
-			err,
-			severity = .Fatal,
-		)
+cartridge_make_from_filename :: proc(
+	filename: string,
+) -> (
+	cartridge: ^Cartridge,
+	err: Maybe(Error),
+) {
+	rom, e := os.read_entire_file_or_err(filename)
+	if e != nil {
+		err = errorf(.IO_Error, "could not open file '%s', %v", filename, err, severity = .Fatal)
+		return
 	}
 
 	defer delete(rom)
 
-	if ok := ines_is_nes_file_format(rom); !ok {
-		return nil, errorf(
-			.iNES_Error,
-			"file '%s' is not an iNES file",
-			filename,
-			severity = .Fatal,
-		)
+	ines, ok := ines_get_from_bytes(rom)
+	if !ok {
+		err = errorf(.iNES_Error, "file '%s' is not an iNES file", filename, severity = .Fatal)
+		return
 	}
-
-	ines := ines_get_from_bytes(rom)
 
 	info := ines_get_info(ines)
-	if err := ines_check_compatability(info); err != nil {
-		return nil, err
-	}
+	ines_check_compatability(info) or_return
+	ines_check_integrity(info) or_return
+	cartridge = cartridge_make_from_ines(ines)
 
-	if err := ines_check_integrity(info); err != nil {
-		return nil, err
-	}
-
-	return cartridge_make_from_ines(ines), nil
+	return
 }
 
 
@@ -184,7 +186,7 @@ cartridge_read_from_address :: proc(
 		// expansion ROM
 		err = errorf(
 			.Memory_Error,
-			"cannot read from $%04X, expansion area not supported by mapper 0($4020-$5FFF)",
+			"cannot read from $%04X, expansion area not supported ($4020-$5FFF)",
 			address,
 		)
 	case:
@@ -207,7 +209,7 @@ cartridge_write_to_address :: proc(
 		// expansion ROM
 		err = errorf(
 			.Memory_Error,
-			"cannot read from $%04X, expansion area not supported by mapper 0($4020-$5FFF)",
+			"cannot read from $%04X, expansion area not supported ($4020-$5FFF)",
 			address,
 		)
 	case:
