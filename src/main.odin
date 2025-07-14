@@ -21,6 +21,12 @@ import rl "vendor:raylib"
 GAME_WIDTH :: 256
 GAME_HEIGHT :: 240
 
+ASSETS_DIR_PATH :: #config(ASSETS_DIR_PATH, #directory + "assets/")
+
+GAMEPAD_MAPPINGS_DATA :: #load(ASSETS_DIR_PATH + "gamecontrollerdb.txt", cstring)
+
+
+
 Emulation_State :: enum {
 	Run,
 	Step_Cycle,
@@ -33,7 +39,6 @@ Emulation_State :: enum {
 	Run_Until_Address,
 }
 
-// ASSETS_DIRECTORY_PATH :: #config(ASSETS_DIRECTORY_PATH, #directory + "./assets")
 
 // default_context: runtime.Context
 
@@ -174,6 +179,8 @@ initialize :: proc() {
 	// Intialize Raylib
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .WINDOW_ALWAYS_RUN, .VSYNC_HINT})
 	rl.InitWindow(GAME_WIDTH * 2, GAME_HEIGHT * 2, "Nemu")
+
+	rl.SetGamepadMappings(GAMEPAD_MAPPINGS_DATA)
 
 
 	// Initialize debug UI

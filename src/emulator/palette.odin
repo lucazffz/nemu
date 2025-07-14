@@ -4,9 +4,7 @@ import "core:os"
 
 Palette :: [64]Color
 
-PALETTES_DIR_PATH :: #directory + "../assets/palettes/"
-
-PALETTE_DEFAULT_DATA :: #load(PALETTES_DIR_PATH + "2C02G_wiki.pal")
+PALETTE_DEFAULT_DATA :: #load(ASSETS_DIR_PATH + "2C02G_wiki.pal")
 
 @(require_results)
 palette_make_from_filename :: proc(filename: string, hue_shift: int) -> (^Palette, Maybe(Error)) {

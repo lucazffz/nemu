@@ -6,6 +6,8 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
+ASSETS_DIR_PATH :: #directory + "assets/"
+
 Console :: struct {
 	cpu:         CPU,
 	ppu:         PPU,
