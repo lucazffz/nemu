@@ -47,7 +47,7 @@ console_make :: proc(
 
 	console = new(Console, allocator, loc) or_return
 
-	pal := palette.? or_else palette_make_default()
+	console.palette = palette.? or_else palette_make_default()
 
 	// pattern table and nametable are stored in cartridge (mapper) so
 	// dont need to allocate them here
