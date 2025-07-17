@@ -8,10 +8,12 @@ import "core:strings"
 
 ASSETS_DIR_PATH :: #directory + "assets/"
 
+CPU_CLK_FREQUENCY :: 1789773.0
+
 Console :: struct {
 	cpu:         CPU,
 	ppu:         PPU,
-	// apu:    APU,
+	apu:         APU,
 	// 2 KB of internal ram ($0000 - $07FF)
 	ram:         []u8,
 	palette:     ^Palette,
@@ -93,6 +95,8 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 
 	c.cartridge = cartridge
 
+	apu_set_sample_frequency(&c.apu, 44100)
+
 	console^ = c
 }
 
@@ -103,6 +107,7 @@ console_execute_clk_cycle :: proc(
 ) -> (
 	frame_complete: bool,
 	cpu_complete: bool,
+	audio_sample_complete: bool,
 	err: Maybe(Error),
 ) {
 	trigger_nmi: bool
@@ -113,6 +118,8 @@ console_execute_clk_cycle :: proc(
 		console.palette,
 		pixel_buffer,
 	)
+
+	audio_sample_complete = apu_execute_clk_cycle(&console.apu)
 
 	if trigger_nmi do console.cpu.interrupt = .NMI
 
@@ -153,7 +160,7 @@ console_reset :: proc(console: ^Console) -> Maybe(Error) {
 	console.cpu.interrupt = .Reset
 	complete: bool
 	for !complete {
-		_, complete = console_execute_clk_cycle(console, nil) or_return
+		_, complete, _ = console_execute_clk_cycle(console, nil) or_return
 
 	}
 
@@ -178,17 +185,15 @@ console_write_to_address :: proc(
 		// registers are mirrored every 8 bytes from $2008-$3fff
 		address_offset := u8(address & 0x7)
 		ppu_write_to_mmio_register(&console.ppu, console.cartridge, data, address_offset) or_return
-	case 0x4000 ..< 0x4020:
-		// APU and I/O registers
-		switch address {
-		case 0x4014:
-			console.cpu.dma_page = data
-			console.cpu.dma_addr = 0x0
-			console.cpu.dma_transfer = true
-		case 0x04016:
-			controller_write(&console.controller1, data)
-			controller_write(&console.controller2, data)
-		}
+	case 0x4000 ..< 0x4014, 0x4015, 0x4017:
+		apu_write_to_address(&console.apu, data, address)
+	case 0x4014:
+		console.cpu.dma_page = data
+		console.cpu.dma_addr = 0x0
+		console.cpu.dma_transfer = true
+	case 0x04016:
+		controller_write(&console.controller1, data)
+		controller_write(&console.controller2, data)
 	case 0x4020 ..= 0xffff:
 		// mapper
 		cartridge_write_to_address(console.cartridge, data, address) or_return
@@ -221,16 +226,14 @@ console_read_from_address :: proc(
 			console.cartridge,
 			address_offset,
 		) or_return
-	case 0x4000 ..< 0x4020:
-		// APU and I/O registers
-		switch address {
-		case 0x4014:
-			err = error(.Memory_Error, "OAMDMA register at address $4014 is write-only")
-		case 0x4016:
-			data = controller_read(&console.controller1)
-		case 0x417:
-			data = controller_read(&console.controller2)
-		}
+	case 0x4000 ..< 0x4014, 0x4015:
+		data, err = apu_read_from_address(&console.apu, address)
+	case 0x4014:
+		err = error(.Memory_Error, "OAMDMA register at address $4014 is write-only")
+	case 0x4016:
+		data = controller_read(&console.controller1)
+	case 0x4017:
+		data = controller_read(&console.controller2)
 	case 0x4020 ..= 0xffff:
 		// mapper
 		data = cartridge_read_from_address(console.cartridge, address) or_return

@@ -1,7 +1,9 @@
 package nemu
 
 import "base:builtin"
+import "base:intrinsics"
 import "base:runtime"
+import "core:c"
 import "core:fmt"
 import "core:log"
 import "core:math"
@@ -10,6 +12,7 @@ import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:sync"
+import "core:sync/chan"
 import "core:thread"
 import "core:time"
 import emu "emulator"
@@ -25,6 +28,9 @@ ASSETS_DIR_PATH :: #config(ASSETS_DIR_PATH, #directory + "assets/")
 
 GAMEPAD_MAPPINGS_DATA :: #load(ASSETS_DIR_PATH + "gamecontrollerdb.txt", cstring)
 
+AUDIO_BUF_DEFAULT_SIZE :: 512
+
+default_context: runtime.Context
 
 
 Emulation_State :: enum {
@@ -53,6 +59,8 @@ g: struct #no_copy {
 	gamepad_0:      Maybe(u32),
 	gamepad_1:      Maybe(u32),
 	should_exit:    bool,
+	audio_steam:    rl.AudioStream,
+	audio_chan:     chan.Chan(f64),
 	// Global state related to emulator
 	emulator:       struct {
 		// @note state is written to by both threads without synchronization,
@@ -123,6 +131,8 @@ main :: proc() {
 	g.multi_logger = log.create_multi_logger(console_logger, g.debug_ui.logger)
 	context.logger = g.multi_logger
 
+	default_context = context
+
 	th := thread.create_and_start(emulator_loop, context, .High)
 	main_loop()
 
@@ -179,6 +189,12 @@ initialize :: proc() {
 	// Intialize Raylib
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .WINDOW_ALWAYS_RUN, .VSYNC_HINT})
 	rl.InitWindow(GAME_WIDTH * 2, GAME_HEIGHT * 2, "Nemu")
+	rl.InitAudioDevice()
+
+	rl.SetAudioStreamBufferSizeDefault(AUDIO_BUF_DEFAULT_SIZE)
+
+	g.audio_steam = rl.LoadAudioStream(44100, 16, 1)
+	rl.SetAudioStreamCallback(g.audio_steam, audio_stream_callback)
 
 	rl.SetGamepadMappings(GAMEPAD_MAPPINGS_DATA)
 
@@ -224,6 +240,14 @@ initialize :: proc() {
 	g.debug_ui.pattern_table_1_texture = rl.LoadTextureFromImage(pattern_table_1_img)
 
 	g.emulator.state = .Run
+
+	g.audio_chan, _ = chan.create_buffered(
+		chan.Chan(f64),
+		AUDIO_BUF_DEFAULT_SIZE,
+		context.allocator,
+	)
+
+	rl.PlayAudioStream(g.audio_steam)
 }
 
 atomic_buffer_swap :: proc(buffer_1: ^[]$E, buffer_2: ^[]E, mutex: ^sync.Mutex) {
@@ -243,6 +267,10 @@ shutdown :: proc() {
 	rlimgui.shutdown()
 	imgui.DestroyContext()
 
+	chan.destroy(g.audio_chan)
+	rl.UnloadAudioStream(g.audio_steam)
+
+	rl.CloseAudioDevice()
 	rl.CloseWindow()
 
 	emu.console_delete(g.emulator.console)
@@ -264,10 +292,56 @@ emulator_is_running :: proc() -> bool {
 	)
 }
 
+audio_stream_callback :: proc "c" (bufferData: rawptr, frames: c.uint) {
+	context = default_context
+
+	// context = default_context
+	// fmt.println(frames)
+	// generate a square pulse wave
+	// incr := 1 / SAMPLE_RATE
+
+	// generate two step sawtooth waves and subtract to create a square wave
+	raw_slice_info := runtime.Raw_Slice{bufferData, int(frames)}
+	data := transmute([]i16)raw_slice_info
+
+	for i in 0 ..< frames {
+		// err: Maybe(emu.Error)
+		// frame_complete, instr_complete, sample_complete: bool
+
+		// for !sample_complete {
+		// frame_complete, instr_complete, sample_complete, _ = emu.console_execute_clk_cycle(
+		// 	g.emulator.console,
+		// 	g.view.back_buffer,
+		// )
+
+		// // if err != nil do emu.error_log(err.?)
+		// if instr_complete do instruction_complete_cb()
+		// if frame_complete do frame_complete_cb()
+
+		sample := chan.recv(g.audio_chan) or_else 0
+		data[i] = i16(32000 * sample)
+
+		// }
+		// if !ok {
+		// 	fmt.println("shit")
+		// 	data[i] = 0
+		// } else {
+		// 	data[i] = val
+		// }
+		// sample := sample_square_wave(square_wave_data, t)
+		// sample1 := sample_triangle_wave(triangle_wave_data, t)
+		// sample2 := sample_square_wave(square_wave_data, t)
+		// data[i] = i16((sample1 + sample2) * amplitude / 2)
+
+		// t += incr
+	}
+}
+
 emulator_loop :: proc() {
 	limit_frame_time: bool
 	time_stamp: time.Time
-	frame_complete, instr_complete: bool
+	frame_complete, instr_complete, sample_complete: bool
+	instr_count := 0
 
 	for {
 		if emulator_is_running() {
@@ -277,73 +351,73 @@ emulator_loop :: proc() {
 		switch g.emulator.state {
 		case .Run:
 			limit_frame_time = true
-			frame_complete, instr_complete = exec()
+			frame_complete, instr_complete, sample_complete = exec()
 		case .Run_Until_Instruction:
 			limit_frame_time = false
-			frame_complete, instr_complete = exec()
+			frame_complete, instr_complete, sample_complete = exec()
 			if instr_complete do g.emulator.run_count -= 1
 			if g.emulator.run_count <= 0 && instr_complete {
 				g.emulator.state = .Pause
 			}
 		case .Run_Until_Frame:
 			limit_frame_time = false
-			frame_complete, instr_complete = exec()
+			frame_complete, instr_complete, sample_complete = exec()
 			if frame_complete do g.emulator.run_count -= 1
 			if g.emulator.run_count <= 0 && frame_complete {
 				g.emulator.state = .Pause
 			}
 		case .Run_Until_Cycle:
 			limit_frame_time = false
-			frame_complete, instr_complete = exec()
+			frame_complete, instr_complete, sample_complete = exec()
 			g.emulator.run_count -= 1
 			if g.emulator.run_count <= 0 {
 				g.emulator.state = .Pause
 			}
 		case .Run_Until_Address:
 			limit_frame_time = false
-			frame_complete, instr_complete = exec()
+			frame_complete, instr_complete, sample_complete = exec()
 			if g.emulator.console.cpu.pc == g.emulator.break_point_addr {
 				g.emulator.state = .Pause
 			}
-
 		case .Step_Cycle:
 			limit_frame_time = false
-			frame_complete, instr_complete = exec()
+			frame_complete, instr_complete, sample_complete = exec()
 			g.emulator.state = .Pause
 		case .Step_Instruction:
 			limit_frame_time = false
 			instr_complete = false
-			for !instr_complete do frame_complete, instr_complete = exec()
+			for !instr_complete do frame_complete, instr_complete, sample_complete = exec()
 			g.emulator.state = .Pause
 		case .Step_Frame:
 			limit_frame_time = false
 			frame_complete = false
-			for !frame_complete do frame_complete, instr_complete = exec()
+			for !frame_complete do frame_complete, instr_complete, sample_complete = exec()
 			g.emulator.state = .Pause
 		case .Pause:
 			limit_frame_time = false
 		}
 
 		if emulator_is_running() {
-			if frame_complete {
-				if limit_frame_time {
-					dt := time.diff(time_stamp, time.now())
-					sleep_time := math.max(0, g.emulator.target_frame_time - dt)
-					time.sleep(sleep_time)
-				}
+			if sample_complete {
+				sample := emu.apu_get_sample(&g.emulator.console.apu)
+				// log.info(sample)
+				chan.send(g.audio_chan, sample)
+			}
 
+			if frame_complete {
 				g.emulator.frame_time = time.diff(time_stamp, time.now())
 			}
+
 		}
 
 		free_all(context.temp_allocator)
 	}
 
 	@(require_results)
-	exec :: proc() -> (frame_complete: bool, instr_complete: bool) {
+	exec :: proc() -> (frame_complete: bool, instr_complete: bool, sample_complete: bool) {
 		err: Maybe(emu.Error)
 
-		frame_complete, instr_complete, err = emu.console_execute_clk_cycle(
+		frame_complete, instr_complete, sample_complete, err = emu.console_execute_clk_cycle(
 			g.emulator.console,
 			g.view.back_buffer,
 		)
@@ -354,16 +428,16 @@ emulator_loop :: proc() {
 		return
 	}
 
-	frame_complete_cb :: proc() {
-		atomic_buffer_swap(&g.view.front_buffer, &g.view.back_buffer, &g.view.render_mutex)
-
-	}
-
-	instruction_complete_cb :: proc() {
-		update_controller_input()
-	}
 }
 
+frame_complete_cb :: proc() {
+	atomic_buffer_swap(&g.view.front_buffer, &g.view.back_buffer, &g.view.render_mutex)
+
+}
+
+instruction_complete_cb :: proc() {
+	update_controller_input()
+}
 
 main_loop :: proc() {
 	// monitor_num := rl.GetCurrentMonitor()

@@ -40,7 +40,6 @@
             git
             cc65 # C compiler for 6502 processor family
             glsl_analyzer
-
           ];
 
           # LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtime_libs;
