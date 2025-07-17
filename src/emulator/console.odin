@@ -95,7 +95,7 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 
 	c.cartridge = cartridge
 
-	apu_set_sample_frequency(&c.apu, 44100)
+	apu_initialize(&c.apu, 44100)
 
 	console^ = c
 }
@@ -111,6 +111,7 @@ console_execute_clk_cycle :: proc(
 	err: Maybe(Error),
 ) {
 	trigger_nmi: bool
+	trigger_irq: bool
 
 	frame_complete, trigger_nmi = ppu_execute_clk_cycle(
 		&console.ppu,
@@ -119,9 +120,10 @@ console_execute_clk_cycle :: proc(
 		pixel_buffer,
 	)
 
-	audio_sample_complete = apu_execute_clk_cycle(&console.apu)
+	audio_sample_complete, trigger_irq = apu_execute_clk_cycle(&console.apu)
 
 	if trigger_nmi do console.cpu.interrupt = .NMI
+	else if trigger_irq do console.cpu.interrupt = .IRQ
 
 	if console.cycle_count % 3 == 0 {
 		if console.cpu.dma_transfer {
