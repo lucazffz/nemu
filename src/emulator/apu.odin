@@ -310,31 +310,54 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 
 		if quater_frame_clk {
 			envelope_execute(&apu.pulse1.envelope)
+			envelope_execute(&apu.pulse2.envelope)
 		}
 
 		if half_frame_clk {
-			if apu.pulse1.enable {
-				if apu.pulse1.length_counter > 0 && !apu.pulse1.length_counter_halt {
-					apu.pulse1.length_counter -= 1
-				}
-			} else {
-				apu.pulse1.length_counter = 0
-			}
+			length_counter_execute(
+				&apu.pulse1.length_counter,
+				apu.pulse1.enable,
+				apu.pulse1.length_counter_halt,
+			)
+			length_counter_execute(
+				&apu.pulse2.length_counter,
+				apu.pulse2.enable,
+				apu.pulse2.length_counter_halt,
+			)
 
 			sweep_execute(&apu.pulse1.sweep, &apu.pulse1.period)
+			sweep_execute(&apu.pulse2.sweep, &apu.pulse1.period)
 		}
 
 		// sequencer_execute(&apu.pulse1.seq, true, proc(sequence: ^u32) {
 		// 	sequence^ = ((sequence^ & 0x1) << 7) | ((sequence^ & 0xfe) >> 1)
 		// })
 
-		pulse1_frequency := get_frequency_from_channel_period(apu.pulse1.period)
-		wave_data := Square_Wave_Data{pulse1_frequency, SINE_WAVE_HARMONIES_NUM, apu.pulse1.duty}
-		sample := sample_square_wave(wave_data, apu.global_time)
-		pulse1_sample := sample * pulse_channel_get_amplitude(apu.pulse1)
 
+		pulse1_sample: f64;{
+			frequency := get_frequency_from_channel_period(apu.pulse1.period)
+			data := Square_Wave_Data{frequency, SINE_WAVE_HARMONIES_NUM, apu.pulse1.duty}
+			sample := sample_square_wave(data, apu.global_time)
+			ampitude := pulse_channel_get_amplitude(apu.pulse1)
+			pulse1_sample = sample * ampitude
+		}
 
-		apu.audio_sample = pulse1_sample
+		pulse2_sample: f64;{
+			frequency := get_frequency_from_channel_period(apu.pulse2.period)
+			data := Square_Wave_Data{frequency, SINE_WAVE_HARMONIES_NUM, apu.pulse2.duty}
+			sample := sample_square_wave(data, apu.global_time)
+			ampitude := pulse_channel_get_amplitude(apu.pulse2)
+			pulse2_sample = sample * ampitude
+		}
+
+		// Linear approximation mixing (see nesdev).
+		// Since pulse channel output is [0,15] (sequencer) but our produced
+		// sample (approx sine square wave) is [0,1], multiply by 15.
+		// Same goes for noise and triangle channels. The DMC ranges
+		// from [0,127].
+		pulse_out := (pulse1_sample + pulse2_sample) * 15 * 0.00752
+		tnd_out := 0.0
+		apu.audio_sample = pulse_out + tnd_out
 	}
 
 	apu.cycle_count += 1
@@ -342,6 +365,16 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 	trigger_irq = apu.frame_interrupt
 
 	return
+}
+
+length_counter_execute :: proc(length_counter: ^u8, enable: bool, halt: bool) {
+	if enable {
+		if length_counter^ > 0 && !halt {
+			length_counter^ -= 1
+		}
+	} else {
+		length_counter^ = 0
+	}
 }
 
 get_frequency_from_channel_period :: proc(#any_int period: u16) -> f64 {
@@ -420,9 +453,7 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 	case 0x4000:
 		// pulse 1 control
 		apu.pulse1.envelope.reg = auto_cast data
-
 		apu.pulse1.length_counter_halt = (data & 0x20) > 0
-
 		switch data >> 6 {
 		case 0:
 			apu.pulse1.duty = 0.125
@@ -448,13 +479,32 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 		// restart envelope
 		apu.pulse1.envelope.divider_reset = true
 	case 0x4004:
-	// pulse 2 control
+		// pulse 2 control
+		apu.pulse2.envelope.reg = auto_cast data
+		apu.pulse2.length_counter_halt = (data & 0x20) > 0
+		switch data >> 6 {
+		case 0:
+			apu.pulse2.duty = 0.125
+		case 1:
+			apu.pulse2.duty = 0.25
+		case 2:
+			apu.pulse2.duty = 0.5
+		case 3:
+			apu.pulse2.duty = 0.75
+		}
 	case 0x4005:
-	// pulse 2 sweep
+		// pulse 2 sweep
+		apu.pulse2.sweep.reg = auto_cast data
+		apu.pulse2.sweep.divider_reset = true
 	case 0x4006:
-	// pulse 2 timer low
+		// pulse 2 timer low
+		apu.pulse2.period = (apu.pulse2.period & 0xff00) | u16(data)
 	case 0x4007:
-	// pulse 2 length counter, timer high
+		// pulse 2 length counter, timer high
+		apu.pulse2.period = (u16(data & 0x07) << 8) | (apu.pulse2.period & 0x00ff)
+		apu.pulse2.length_counter = length_counter_LUT[data >> 3]
+
+		apu.pulse2.envelope.divider_reset = true
 	case 0x4008:
 	// triangle control
 	case 0x4009:
@@ -482,6 +532,7 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 	case 0x4015:
 		// status
 		apu.pulse1.enable = data & 0x01 > 0
+		apu.pulse2.enable = data & 0x02 > 0
 	case 0x4017:
 		// APU frame counter
 		apu.frame_reg = auto_cast data
