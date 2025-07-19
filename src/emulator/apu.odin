@@ -1,4 +1,5 @@
 package emulator
+
 import "core:log"
 import "core:math"
 import "core:os"
@@ -28,20 +29,33 @@ APU :: struct {
 }
 
 Pulse_Channel :: struct {
-	enable:              bool,
-	// ctrl_reg:       bit_field u8 {
-	// 	_unused:             bool | 5,
-	// 	length_counter_halt: bool | 1,
-	// 	duty:                u8   | 2,
-	// },
-	period:              u16, // 11 bits, 
-	duty:                f64,
-	// length_counter: u8, // 5 bits, 
-	// seq:            Sequencer,
-	length_counter:      u8,
-	length_counter_halt: bool,
-	envelope:            Envelope,
-	sweep:               Sweep,
+	enable:                bool,
+	ctrl_reg:              bit_field u8 {
+		value:           u8   | 4, // volume/envelope
+		constant_volume: bool | 1,
+		flag:            bool | 1, // envelope loop/length counter halt
+		duty:            u8   | 2,
+	},
+	sweep_reg:             bit_field u8 {
+		shift:  u8   | 3,
+		negate: bool | 1,
+		value:  u8   | 3,
+		enable: bool | 1,
+	},
+	period:                u16, // 11 bits, 
+	length_counter:        u8,
+	// --- Internal state variables,
+	// not set by writing to addresses.
+	volume:                u8,
+	// envelope
+	env_decay_level_count: u8,
+	env_divider_reset:     bool,
+	env_divider_count:     u8,
+	// sweep 
+	sweep_target_period:   u16,
+	sweep_negate_two_comp: bool,
+	sweep_divider_reset:   bool,
+	sweep_divider_count:   u8,
 }
 
 Triangle_Channel :: struct {
@@ -53,57 +67,24 @@ Noise_Channel :: struct {
 DMC :: struct {
 }
 
-Envelope :: struct {
-	// only updated in memory write
-	reg:               bit_field u8 {
-		value:           u8   | 4,
-		constant_volume: bool | 1,
-		loop:            bool | 1,
-		_unused:         u8   | 2,
-	},
-	// internal state of envelope
-	decay_level_count: u8,
-	divider_reset:     bool,
-	divider_count:     u8,
-	output:            u8,
-}
-
-Sweep :: struct {
-	// only updated in memory write
-	reg:                         bit_field u8 {
-		shift:  u8   | 3,
-		negate: bool | 1,
-		value:  u8   | 3,
-		enable: bool | 1,
-	},
-	// internal state of sweep
-	negate_with_twos_complement: bool,
-	divider_reset:               bool,
-	divider_count:               u8,
-}
-
-Sequencer :: struct {
-	sequence: u32,
-	timer:    u16,
-	reload:   u16,
-	output:   u8,
-	// func:           proc(sequence: ^u32),
-}
-
+@(private = "file")
 Square_Wave_Data :: struct {
 	frequency:     f64,
 	harmonics_num: int,
 	duty_cycle:    f64,
 }
 
+@(private = "file")
 Triangle_Wave_Data :: struct {
 	frequency:     f64,
 	harmonics_num: int,
 }
 
+@(private = "file")
 Noise_Wave_Data :: struct {
 }
 
+@(rodata)
 length_counter_LUT := [?]u8 {
 	10,
 	254,
@@ -145,92 +126,12 @@ apu_initialize :: proc(apu: ^APU, sample_rate: f64) {
 	apu.audio_time_per_apu_clk = 1.0 / 5369318.0 // ppu/apu clk freq
 
 
-	apu.pulse1.sweep.negate_with_twos_complement = false
-	apu.pulse2.sweep.negate_with_twos_complement = true
+	// The sweep unit of pulse channel 1 and 2 negate the period using
+	// one's respectively two's complement.
+	apu.pulse1.sweep_negate_two_comp = false
+	apu.pulse2.sweep_negate_two_comp = true
 }
 
-Sequencer_Proc :: #type proc(sequence: ^u32)
-
-
-sweep_execute :: proc(s: ^Sweep, period: ^u16) {
-	if !s.divider_reset {
-		s.divider_count -= 1
-
-		if s.divider_count == 0xff {
-			target_period := sweep_get_target_period(s^, period^)
-			if !sweep_is_target_period_out_of_range(target_period) {
-				if s.reg.enable && s.reg.shift > 0 {
-					period^ = target_period
-				}
-			}
-
-			s.divider_count = s.reg.value
-		}
-	} else {
-		s.divider_reset = false
-		s.divider_count = s.reg.value
-	}
-}
-
-sweep_get_target_period :: proc(s: Sweep, period: u16) -> u16 {
-	current_period := period >> s.reg.shift
-	target_period: u16
-	if s.reg.negate {
-		target_period = period - current_period
-		if !s.negate_with_twos_complement do target_period -= 1
-	} else {
-		target_period = period + current_period
-	}
-
-	return target_period
-}
-
-sweep_is_target_period_out_of_range :: proc(target_period: u16) -> bool {
-	if target_period < 0 || target_period > 0x7ff {
-		return true
-	}
-
-	return false
-}
-
-envelope_execute :: proc(e: ^Envelope) {
-	if !e.divider_reset {
-		e.divider_count -= 1
-		if e.divider_count == 0xff {
-			e.divider_count = e.reg.value
-
-			if e.decay_level_count > 0 {
-				e.decay_level_count -= 1
-			} else if e.reg.loop {
-				e.decay_level_count = 0x0f
-			}
-		}
-	} else {
-		e.divider_reset = false
-		e.decay_level_count = 0x0f
-		e.divider_count = e.reg.value
-	}
-
-	if !e.reg.constant_volume {
-		e.output = e.decay_level_count
-	} else {
-		e.output = e.reg.value
-	}
-
-}
-
-sequencer_execute :: proc(s: ^Sequencer, enable: bool, func: Sequencer_Proc) -> u8 {
-	if enable {
-		s.timer -= 1
-		if s.timer == 0xffff {
-			s.timer = s.reload + 1
-			func(&s.sequence)
-			s.output = u8(s.sequence & 0x1)
-		}
-	}
-
-	return s.output
-}
 
 apu_get_sample :: proc(apu: ^APU) -> f64 {
 	return apu.audio_sample
@@ -307,46 +208,26 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 			}
 		}
 
+		pulse_channel_clock(&apu.pulse1, quater_frame_clk, half_frame_clk)
+		pulse_channel_clock(&apu.pulse2, quater_frame_clk, half_frame_clk)
 
-		if quater_frame_clk {
-			envelope_execute(&apu.pulse1.envelope)
-			envelope_execute(&apu.pulse2.envelope)
-		}
-
-		if half_frame_clk {
-			length_counter_execute(
-				&apu.pulse1.length_counter,
-				apu.pulse1.enable,
-				apu.pulse1.length_counter_halt,
-			)
-			length_counter_execute(
-				&apu.pulse2.length_counter,
-				apu.pulse2.enable,
-				apu.pulse2.length_counter_halt,
-			)
-
-			sweep_execute(&apu.pulse1.sweep, &apu.pulse1.period)
-			sweep_execute(&apu.pulse2.sweep, &apu.pulse1.period)
-		}
-
-		// sequencer_execute(&apu.pulse1.seq, true, proc(sequence: ^u32) {
-		// 	sequence^ = ((sequence^ & 0x1) << 7) | ((sequence^ & 0xfe) >> 1)
-		// })
-
-
-		pulse1_sample: f64;{
+		pulse1_sample: f64
+		if !pulse_channel_should_mute(apu.pulse1) {
 			frequency := get_frequency_from_channel_period(apu.pulse1.period)
-			data := Square_Wave_Data{frequency, SINE_WAVE_HARMONIES_NUM, apu.pulse1.duty}
+			duty := get_duty_fraction_from_channel_duty(apu.pulse1.ctrl_reg.duty)
+			data := Square_Wave_Data{frequency, SINE_WAVE_HARMONIES_NUM, duty}
 			sample := sample_square_wave(data, apu.global_time)
-			ampitude := pulse_channel_get_amplitude(apu.pulse1)
+			ampitude := get_amplitude_from_channel_volume(apu.pulse1.volume)
 			pulse1_sample = sample * ampitude
 		}
 
-		pulse2_sample: f64;{
+		pulse2_sample: f64
+		if !pulse_channel_should_mute(apu.pulse2) {
 			frequency := get_frequency_from_channel_period(apu.pulse2.period)
-			data := Square_Wave_Data{frequency, SINE_WAVE_HARMONIES_NUM, apu.pulse2.duty}
+			duty := get_duty_fraction_from_channel_duty(apu.pulse2.ctrl_reg.duty)
+			data := Square_Wave_Data{frequency, SINE_WAVE_HARMONIES_NUM, duty}
 			sample := sample_square_wave(data, apu.global_time)
-			ampitude := pulse_channel_get_amplitude(apu.pulse2)
+			ampitude := get_amplitude_from_channel_volume(apu.pulse2.volume)
 			pulse2_sample = sample * ampitude
 		}
 
@@ -367,107 +248,16 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 	return
 }
 
-length_counter_execute :: proc(length_counter: ^u8, enable: bool, halt: bool) {
-	if enable {
-		if length_counter^ > 0 && !halt {
-			length_counter^ -= 1
-		}
-	} else {
-		length_counter^ = 0
-	}
-}
-
-get_frequency_from_channel_period :: proc(#any_int period: u16) -> f64 {
-	return CPU_CLK_FREQUENCY / (16.0 * f64(period + 1))
-
-}
-
-pulse_channel_get_amplitude :: proc(p: Pulse_Channel) -> f64 {
-	if should_mute(p) {
-		return 0
-	}
-
-	amplitude: f64
-	if p.envelope.reg.constant_volume {
-		amplitude = f64(p.envelope.reg.value) / 15
-	} else {
-		amplitude = f64(p.envelope.output) / 15
-	}
-
-	return amplitude
-
-	should_mute :: proc(p: Pulse_Channel) -> bool {
-		if p.period < 8 {
-			return true
-		}
-
-		if p.length_counter <= 0 {
-			return true
-		}
-
-		target_period := sweep_get_target_period(p.sweep, p.period)
-		if sweep_is_target_period_out_of_range(target_period) {
-			return true
-		}
-
-		return false
-	}
-}
-
-sample_square_wave :: proc "contextless" (data: Square_Wave_Data, t: f64) -> f64 {
-	sawtooth_wave1, sawtooth_wave2: f64
-	p := data.duty_cycle * 2 * math.PI
-
-	for i in 1 ..= f64(data.harmonics_num) {
-		c := 2 * math.PI * i * data.frequency * t
-		sawtooth_wave1 += -fast_approx_sin(c) / i
-		sawtooth_wave2 += -fast_approx_sin(c - p * i) / i
-	}
-
-	return (sawtooth_wave1 - sawtooth_wave2) / math.PI
-}
-
-fast_approx_sin :: proc "contextless" (x: f64) -> f64 {
-	j := x * 0.15915
-	j = j - f64(int(j))
-	return 20.785 * j * (j - 0.5) * (j - 1.0)
-}
-
-sample_triangle_wave :: proc "contextless" (data: Triangle_Wave_Data, t: f64) -> f64 {
-	sum: f64
-	for i in 0 ..< f64(data.harmonics_num) {
-		n := 2 * i + 1
-		c := 2 * math.PI * n * data.frequency * t
-		sum += (math.pow(-1, i) / (n * n)) * fast_approx_sin(c)
-	}
-
-	return sum * 8 / math.pow_f64(math.PI, 2)
-}
-
-sample_noise_wave :: proc "contextless" (data: Noise_Wave_Data, t: f64) -> f64 {
-	return 0
-}
 
 apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 	switch address {
 	case 0x4000:
 		// pulse 1 control
-		apu.pulse1.envelope.reg = auto_cast data
-		apu.pulse1.length_counter_halt = (data & 0x20) > 0
-		switch data >> 6 {
-		case 0:
-			apu.pulse1.duty = 0.125
-		case 1:
-			apu.pulse1.duty = 0.25
-		case 2:
-			apu.pulse1.duty = 0.5
-		case 3:
-			apu.pulse1.duty = 0.75
-		}
+		apu.pulse1.ctrl_reg = auto_cast data
 	case 0x4001:
 		// pulse 1 sweep
-		apu.pulse1.sweep.reg = auto_cast data
-		apu.pulse1.sweep.divider_reset = true
+		apu.pulse1.sweep_reg = auto_cast data
+		apu.pulse1.sweep_divider_reset = true
 	case 0x4002:
 		// pulse 1 timer low
 		apu.pulse1.period = (apu.pulse1.period & 0xff00) | u16(data)
@@ -477,25 +267,14 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 		apu.pulse1.length_counter = length_counter_LUT[data >> 3]
 
 		// restart envelope
-		apu.pulse1.envelope.divider_reset = true
+		apu.pulse1.env_divider_reset = true
 	case 0x4004:
 		// pulse 2 control
-		apu.pulse2.envelope.reg = auto_cast data
-		apu.pulse2.length_counter_halt = (data & 0x20) > 0
-		switch data >> 6 {
-		case 0:
-			apu.pulse2.duty = 0.125
-		case 1:
-			apu.pulse2.duty = 0.25
-		case 2:
-			apu.pulse2.duty = 0.5
-		case 3:
-			apu.pulse2.duty = 0.75
-		}
+		apu.pulse2.ctrl_reg = auto_cast data
 	case 0x4005:
 		// pulse 2 sweep
-		apu.pulse2.sweep.reg = auto_cast data
-		apu.pulse2.sweep.divider_reset = true
+		apu.pulse2.sweep_reg = auto_cast data
+		apu.pulse2.sweep_divider_reset = true
 	case 0x4006:
 		// pulse 2 timer low
 		apu.pulse2.period = (apu.pulse2.period & 0xff00) | u16(data)
@@ -504,7 +283,7 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 		apu.pulse2.period = (u16(data & 0x07) << 8) | (apu.pulse2.period & 0x00ff)
 		apu.pulse2.length_counter = length_counter_LUT[data >> 3]
 
-		apu.pulse2.envelope.divider_reset = true
+		apu.pulse2.env_divider_reset = true
 	case 0x4008:
 	// triangle control
 	case 0x4009:
@@ -562,5 +341,179 @@ apu_read_from_address :: proc(apu: ^APU, address: u16) -> (data: u8, err: Maybe(
 	}
 
 	return
+}
+
+// Containes all core logic for updating the state of the pulse channels.
+@(private = "file")
+pulse_channel_clock :: proc(p: ^Pulse_Channel, quater_frame: bool, half_frame: bool) {
+	update_sweep_target_period: {
+		// The sweep target period is continuously updated (combinatorial
+		// hardare circuit in NES) and will affect the wave amplitude. Only
+		// mutates period when sweep divider reaches zero.
+		current_period := p.period >> p.sweep_reg.shift
+		if p.sweep_reg.negate {
+			p.sweep_target_period = p.period - current_period
+			if !p.sweep_negate_two_comp do p.sweep_target_period -= 1
+		} else {
+			p.sweep_target_period = p.period + current_period
+		}
+	}
+
+	if quater_frame {
+		// Update envelope
+		// Both the envelope and sweep use an identical divider circuit to
+		// allow for variable execution frequency.
+		if !p.env_divider_reset {
+			p.env_divider_count -= 1
+			if p.env_divider_count == 0xff {
+				p.env_divider_count = p.ctrl_reg.value
+				// Decrement decay level counter when divider reaches
+				// zero and reset if loop flag set.
+				if p.env_decay_level_count > 0 {
+					p.env_decay_level_count -= 1
+				} else if p.ctrl_reg.flag {
+					p.env_decay_level_count = 0x0f
+				}
+			}
+		} else {
+			p.env_divider_reset = false
+			p.env_decay_level_count = 0x0f
+			p.env_divider_count = p.ctrl_reg.value
+		}
+
+		if !p.ctrl_reg.constant_volume {
+			p.volume = p.env_decay_level_count
+		} else {
+			p.volume = p.ctrl_reg.value
+		}
+	}
+
+	if half_frame {
+		// update length counter
+		if p.enable {
+			if p.length_counter > 0 && !p.ctrl_reg.flag {
+				p.length_counter -= 1
+			}
+		} else {
+			p.length_counter = 0
+		}
+
+		// update sweep
+		if !p.sweep_divider_reset {
+			p.sweep_divider_count -= 1
+
+			if p.sweep_divider_count == 0xff {
+				p.sweep_divider_count = p.sweep_reg.value
+				if sweep_target_period_in_range(p.sweep_target_period) {
+					if p.sweep_reg.enable && p.sweep_reg.shift > 0 {
+						p.period = p.sweep_target_period
+					}
+				}
+			}
+		} else {
+			p.sweep_divider_reset = false
+			p.sweep_divider_count = p.sweep_reg.value
+		}
+	}
+}
+
+// --- Wave generation functions
+// The NES outputs a 1 bit sample, using a sequencer, that gets converted
+// to a voltage signal through a DAC (digital to analog converter).
+// The pulse and triangle channels therefore produces pure square
+// and triangle waves which does not play well with modern audio systems.
+// Therefore, the channel sequencer is replaced by a wave generation function
+// (which depends on the channel) producing a sine wave approximation.
+
+@(private = "file")
+sample_square_wave :: proc "contextless" (data: Square_Wave_Data, t: f64) -> f64 {
+	sawtooth_wave1, sawtooth_wave2: f64
+	p := data.duty_cycle * 2 * math.PI
+
+	for i in 1 ..= f64(data.harmonics_num) {
+		c := 2 * math.PI * i * data.frequency * t
+		sawtooth_wave1 += -fast_approx_sin(c) / i
+		sawtooth_wave2 += -fast_approx_sin(c - p * i) / i
+	}
+
+	return (sawtooth_wave1 - sawtooth_wave2) / math.PI
+}
+
+@(private = "file")
+fast_approx_sin :: proc "contextless" (x: f64) -> f64 {
+	j := x * 0.15915
+	j = j - f64(int(j))
+	return 20.785 * j * (j - 0.5) * (j - 1.0)
+}
+
+@(private = "file")
+sample_triangle_wave :: proc "contextless" (data: Triangle_Wave_Data, t: f64) -> f64 {
+	sum: f64
+	for i in 0 ..< f64(data.harmonics_num) {
+		n := 2 * i + 1
+		c := 2 * math.PI * n * data.frequency * t
+		sum += (math.pow(-1, i) / (n * n)) * fast_approx_sin(c)
+	}
+
+	return sum * 8 / math.pow_f64(math.PI, 2)
+}
+
+@(private = "file")
+sample_noise_wave :: proc "contextless" (data: Noise_Wave_Data, t: f64) -> f64 {
+	return 0
+}
+
+// --- Auxiliary functions
+
+@(private = "file")
+sweep_target_period_in_range :: proc(#any_int target_period: u16) -> bool {
+	if target_period >= 0 && target_period <= 0x7ff {
+		return true
+	}
+
+	return false
+}
+
+@(private = "file")
+get_frequency_from_channel_period :: proc(#any_int period: u16) -> f64 {
+	return CPU_CLK_FREQUENCY / (16.0 * f64(period + 1))
+}
+
+@(private = "file")
+get_amplitude_from_channel_volume :: proc(#any_int volume: u8) -> f64 {
+	return f64(volume) / 15
+}
+
+@(private = "file")
+get_duty_fraction_from_channel_duty :: proc(#any_int duty: u8) -> f64 {
+	switch duty & 0x03 {
+	case 0:
+		return 0.125
+	case 1:
+		return 0.25
+	case 2:
+		return 0.5
+	case 3:
+		return 0.75
+	}
+
+	panic("unreachable")
+}
+
+@(private = "file")
+pulse_channel_should_mute :: proc(p: Pulse_Channel) -> bool {
+	if p.period < 8 {
+		return true
+	}
+
+	if p.length_counter <= 0 {
+		return true
+	}
+
+	if !sweep_target_period_in_range(p.sweep_target_period) {
+		return true
+	}
+
+	return false
 }
 
