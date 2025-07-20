@@ -3,8 +3,7 @@ package emulator
 import "core:log"
 import "core:math"
 import "core:os"
-
-SINE_WAVE_HARMONIES_NUM :: 20
+import "core:slice"
 
 APU :: struct {
 	frame_reg:                    bit_field u8 {
@@ -24,9 +23,7 @@ APU :: struct {
 	audio_time_per_system_sample: f64,
 	audio_time_per_apu_clk:       f64,
 	audio_time:                   f64,
-	audio_sample:                 f64,
-	triangle_sample:              f64,
-	global_time:                  f64,
+	sample_buf:                   [dynamic]f64,
 }
 
 Pulse_Channel :: struct {
@@ -78,27 +75,51 @@ Triangle_Channel :: struct {
 }
 
 Noise_Channel :: struct {
+	enable:                 bool,
+	ctrl_reg:               bit_field u8 {
+		value:           u8   | 4, // volume/envelope
+		constant_volume: bool | 1,
+		flag:            bool | 1, // envelope loop/length counter halt
+		_unused:         u8   | 2,
+	},
+	noise_reg:              bit_field u8 {
+		period:    u8   | 4,
+		_unused:   u8   | 3,
+		mode_flag: bool | 1,
+	},
+	// timer_period:          u16, // 11 bits
+	// --- Internal state variables
+	feedback_shifter_value: u16, // 15 bits
+	timer_value:            u16,
+	// sequence_index:        u8,
+	// sequence_output:       u8,
+	length_counter_value:   u8,
+	// envelope
+	env_decay_level_count:  u8,
+	env_divider_reset:      bool,
+	env_divider_value:      u8,
+	env_output:             u8,
 }
 
 DMC :: struct {
 }
 
-@(private = "file")
-Square_Wave_Data :: struct {
-	frequency:     f64,
-	harmonics_num: int,
-	duty_cycle:    f64,
-}
+// @(private = "file")
+// Square_Wave_Data :: struct {
+// 	frequency:     f64,
+// 	harmonics_num: int,
+// 	duty_cycle:    f64,
+// }
 
-@(private = "file")
-Triangle_Wave_Data :: struct {
-	frequency:     f64,
-	harmonics_num: int,
-}
+// @(private = "file")
+// Triangle_Wave_Data :: struct {
+// 	frequency:     f64,
+// 	harmonics_num: int,
+// }
 
-@(private = "file")
-Noise_Wave_Data :: struct {
-}
+// @(private = "file")
+// Noise_Wave_Data :: struct {
+// }
 
 apu_initialize :: proc(apu: ^APU, sample_rate: f64) {
 	// @note Not setting irq inhibit flag on startup causes issues
@@ -112,11 +133,15 @@ apu_initialize :: proc(apu: ^APU, sample_rate: f64) {
 	// one's respectively two's complement.
 	apu.pulse1.sweep_negate_two_comp = false
 	apu.pulse2.sweep_negate_two_comp = true
+
+	apu.noise.feedback_shifter_value = 1
 }
 
 
-apu_get_sample :: proc(apu: ^APU) -> f64 {
-	return apu.audio_sample
+apu_get_sample :: proc(apu: ^APU) -> (sample: f64) {
+	sample = math.sum(apu.sample_buf[:]) / f64(len(apu.sample_buf))
+	clear_dynamic_array(&apu.sample_buf)
+	return
 
 }
 
@@ -126,8 +151,6 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 		apu.audio_time -= apu.audio_time_per_system_sample
 		sample_complete = true
 	}
-
-	apu.global_time += (0.3333333333 / CPU_CLK_FREQUENCY)
 
 	defer {
 		apu.cycle_count += 1
@@ -144,18 +167,21 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 	if apu.cycle_count % 6 == 0 {
 		frame, half_frame, quater_frame := execute_frame_sequence(apu)
 
-
 		pulse_channel_frame_clock(&apu.pulse1, quater_frame, half_frame)
 		pulse_channel_frame_clock(&apu.pulse2, quater_frame, half_frame)
+		noise_channel_frame_clock(&apu.noise, quater_frame, half_frame)
 		triangle_channel_frame_clock(&apu.triangle, quater_frame, half_frame)
 
 		pulse1_sample := get_pulse_channel_output(apu.pulse1)
 		pulse2_sample := get_pulse_channel_output(apu.pulse2)
 		triangle_sample := get_triangle_channel_output(apu.triangle)
+		noise_sample := get_noise_channel_output(apu.noise)
 
 		pulse_out := f64(apu_pulse_mixer_table[pulse1_sample + pulse2_sample])
-		tnd_out := 0.00851 * f64(triangle_sample)
-		apu.audio_sample = tnd_out + pulse_out
+		tnd_out := 0.00851 * f64(triangle_sample) + 0.00494 * f64(noise_sample)
+
+		sample_out := pulse_out + tnd_out
+		append_elem(&apu.sample_buf, sample_out)
 	}
 
 	return
@@ -267,13 +293,16 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 		apu.triangle.length_counter_value = apu_length_counter_table[data >> 3]
 		apu.triangle.linear_counter_reset = true // side effect
 	case 0x400c:
-	// noise control
+		// noise control
+		apu.noise.ctrl_reg = auto_cast data
 	case 0x400d:
 	// unused
 	case 0x400e:
-	// noise mode, period
+		// noise mode, period
+		apu.noise.noise_reg = auto_cast data
 	case 0x400f:
-	// noise length counter
+		// noise length counter
+		apu.noise.length_counter_value = apu_length_counter_table[data >> 3]
 	case 0x4010:
 	// DMC control
 	case 0x4011:
@@ -287,6 +316,7 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 		apu.pulse1.enable = data & 0x01 > 0
 		apu.pulse2.enable = data & 0x02 > 0
 		apu.triangle.enable = data & 0x04 > 0
+		apu.noise.enable = data & 0x08 > 0
 	case 0x4017:
 		// APU frame counter
 		apu.frame_reg = auto_cast data
@@ -311,6 +341,7 @@ apu_read_from_address :: proc(apu: ^APU, address: u16) -> (data: u8, err: Maybe(
 	case 0x4015:
 		data =
 			(u8(apu.frame_interrupt) << 6) +
+			(u8(apu.noise.length_counter_value > 0) << 3) +
 			(u8(apu.triangle.length_counter_value > 0) << 2) +
 			(u8(apu.pulse1.length_counter_value > 0) << 1) +
 			(u8(apu.pulse1.length_counter_value > 0))
@@ -320,6 +351,91 @@ apu_read_from_address :: proc(apu: ^APU, address: u16) -> (data: u8, err: Maybe(
 	}
 
 	return
+}
+
+@(private = "file")
+get_noise_channel_output :: proc(n: Noise_Channel) -> u8 {
+	if !should_mute(n) {
+		return n.env_output
+	} else {
+		return 0
+	}
+
+	should_mute :: proc(n: Noise_Channel) -> bool {
+		if !n.enable {
+			return true
+		}
+
+		if n.length_counter_value <= 0 {
+			return true
+		}
+
+		if n.feedback_shifter_value & 0x1 == 0x1 {
+			return true
+		}
+
+		return false
+	}
+}
+
+@(private = "file")
+noise_channel_frame_clock :: proc(n: ^Noise_Channel, quater_frame, half_frame: bool) {
+	if quater_frame {
+		update_envelope: {
+			// Both the envelope and sweep use an identical divider circuit to
+			// allow for variable execution frequency.
+			if !n.env_divider_reset {
+				n.env_divider_value -= 1
+				if n.env_divider_value == 0xff {
+					n.env_divider_value = n.ctrl_reg.value
+					// Decrement decay level counter when divider reaches
+					// zero and reset if loop flag set.
+					if n.env_decay_level_count > 0 {
+						n.env_decay_level_count -= 1
+					} else if n.ctrl_reg.flag {
+						n.env_decay_level_count = 0x0f
+					}
+				}
+			} else {
+				n.env_divider_reset = false
+				n.env_decay_level_count = 0x0f
+				n.env_divider_value = n.ctrl_reg.value
+			}
+
+			if !n.ctrl_reg.constant_volume {
+				n.env_output = n.env_decay_level_count
+			} else {
+				n.env_output = n.ctrl_reg.value
+			}
+		}
+	}
+
+	if half_frame {
+		update_length_counter: if n.enable {
+			if n.length_counter_value > 0 && !n.ctrl_reg.flag {
+				n.length_counter_value -= 1
+			}
+		} else {
+			n.length_counter_value = 0
+		}
+	}
+
+	update_timer: if n.timer_value > 0 {
+		n.timer_value -= 1
+	} else {
+		n.timer_value = apu_noise_period_table[n.noise_reg.period]
+		feedback: u16
+		if n.noise_reg.mode_flag {
+			// xor bit 0 and 6
+			feedback = (n.feedback_shifter_value & 0x1) ~ ((n.feedback_shifter_value >> 6) & 0x1)
+		} else {
+			// xor bit 0 and 1
+			feedback = (n.feedback_shifter_value & 0x1) ~ ((n.feedback_shifter_value >> 1) & 0x1)
+		}
+
+		n.feedback_shifter_value >>= 1
+		n.feedback_shifter_value = (n.feedback_shifter_value & 0x3fff) | feedback << 14
+	}
 }
 
 @(private = "file")
@@ -335,7 +451,7 @@ triangle_channel_clock :: proc(t: ^Triangle_Channel) {
 		t.timer_value = t.timer_period
 		t.sequence_index = (t.sequence_index + 1) % 32
 		if should_update_sequence_output(t^) {
-			t.sequence_output = apu_triangle_table[t.sequence_index]
+			t.sequence_output = apu_triangle_sequence_table[t.sequence_index]
 		}
 	}
 

@@ -58,6 +58,8 @@ console_make :: proc(
 	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
 	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
 
+	console.apu.sample_buf = make_dynamic_array([dynamic]f64, allocator, loc) or_return
+
 	return
 }
 
@@ -69,6 +71,7 @@ console_delete :: proc(
 ) -> runtime.Allocator_Error {
 	delete_slice(console.ram, allocator, loc) or_return
 	delete_slice(console.ppu.palette, allocator, loc) or_return
+	delete_dynamic_array(console.apu.sample_buf, loc) or_return
 	palette_delete(console.palette)
 	cartridge_delete(console.cartridge)
 
