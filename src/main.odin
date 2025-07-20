@@ -319,7 +319,7 @@ audio_stream_callback :: proc "c" (bufferData: rawptr, frames: c.uint) {
 		// if frame_complete do frame_complete_cb()
 
 		sample := chan.recv(g.audio_chan) or_else 0
-		data[i] = i16(32000 * sample)
+		data[i] = i16(16000 * sample)
 
 		// }
 		// if !ok {
