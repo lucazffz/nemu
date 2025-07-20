@@ -8,6 +8,7 @@ package emulator
 // The idea of encoding instruction information in tables is inspired by
 // Michael Fogleman's NES Emulator found here: https://github.com/fogleman/nes
 
+@(rodata)
 instruction_type := [256]int{
 	// 0x0X
 	39, 3, 77, 60, 47, 3, 9, 60, 33, 3, 9, 73, 47, 3, 9, 60,
@@ -43,6 +44,7 @@ instruction_type := [256]int{
 	55, 5, 77, 57, 47, 5, 14, 57, 44, 5, 47, 57, 47, 5, 14, 57,
 }
 
+@(rodata)
 instruction_addressing_mode := [256]int{
 	// 0x0X
 	0, 11, 0, 11, 3, 3, 3, 3, 0, 2, 1, 2, 7, 7, 7, 7,
@@ -78,6 +80,7 @@ instruction_addressing_mode := [256]int{
 	6, 12, 0, 12, 4, 4, 4, 4, 0, 9, 0, 9, 8, 8, 8, 8,
 }
 
+@(rodata)
 instruction_byte_size := [256]int{
 	// 0x0X
 	1, 2, 1, 2, 2, 2, 2, 2, 1, 2, 1, 2, 3, 3, 3, 3,
@@ -113,6 +116,7 @@ instruction_byte_size := [256]int{
 	2, 2, 1, 2, 2, 2, 2, 2, 1, 3, 1, 3, 3, 3, 3, 3,
 }
 
+@(rodata)
 instruction_cycle_count := [256]int{
 	// 0x0X
 	7, 6, 2, 8, 3, 3, 5, 5, 3, 2, 2, 2, 4, 4, 6, 6,
@@ -151,6 +155,7 @@ instruction_cycle_count := [256]int{
 // @note Page boundary extra cycles for branch instructions (e.g., BPL, BMI) 
 // are typically handled differently. The cycle count increases if the branch is taken,
 // and again if the branch crosses a page. 
+@(rodata)
 instruction_page_boundary_extra_cycles := [256]int{
 	// 0x0X
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -186,6 +191,7 @@ instruction_page_boundary_extra_cycles := [256]int{
 	1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0,
 }
 
+@(rodata)
 instruction_category := [256]int{
 	// 0x0X
 	0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1,

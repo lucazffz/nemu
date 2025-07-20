@@ -121,6 +121,8 @@ length_counter_LUT := [?]u8 {
 }
 
 apu_initialize :: proc(apu: ^APU, sample_rate: f64) {
+	// @note Not setting irq inhibit flag on startup causes issues
+	// in Super Mario Bros, and probably more games.
 	apu.frame_reg.irq_inhibit_flag = true
 	apu.audio_time_per_system_sample = 1.0 / sample_rate
 	apu.audio_time_per_apu_clk = 1.0 / 5369318.0 // ppu/apu clk freq
@@ -142,74 +144,23 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 	apu.audio_time += apu.audio_time_per_apu_clk
 	if apu.audio_time >= apu.audio_time_per_system_sample {
 		apu.audio_time -= apu.audio_time_per_system_sample
-		// apu.audio_sample = apu_get_sample(apu)
 		sample_complete = true
 	}
 
 	apu.global_time += (0.3333333333 / CPU_CLK_FREQUENCY)
 
+	defer {
+		apu.cycle_count += 1
+		trigger_irq = apu.frame_interrupt
+	}
 
-	quater_frame_clk: bool
-	half_frame_clk: bool
-	frame_clk: bool
-
+	// only update APU once per frame (cpu_cycle / 2 <=> ppu_cycle / 6)
 	if apu.cycle_count % 6 == 0 {
-		apu.frame_count += 1
+		frame, half_frame, quater_frame := execute_frame_sequence(apu)
 
-		if apu.frame_reg.sequence_mode == 0 {
-			// 4 step sequence
-			if apu.frame_count == 3729 {
-				quater_frame_clk = true
-			}
 
-			if apu.frame_count == 7457 {
-				quater_frame_clk = true
-				half_frame_clk = true
-			}
-
-			if apu.frame_count == 11186 {
-				quater_frame_clk = true
-			}
-
-			if apu.frame_count == 14915 {
-				if !apu.frame_reg.irq_inhibit_flag {
-					apu.frame_interrupt = true
-				}
-
-				quater_frame_clk = true
-				half_frame_clk = true
-				frame_clk = true
-				apu.frame_count = 0
-			}
-		} else {
-			// 5 step sequence
-			if apu.frame_count == 3729 {
-				quater_frame_clk = true
-			}
-
-			if apu.frame_count == 7457 {
-				quater_frame_clk = true
-				half_frame_clk = true
-			}
-
-			if apu.frame_count == 11186 {
-				quater_frame_clk = true
-			}
-
-			if apu.frame_count == 14915 {
-				// do nothing
-			}
-
-			if apu.frame_count == 18641 {
-				quater_frame_clk = true
-				half_frame_clk = true
-				frame_clk = true
-				apu.frame_count = 0
-			}
-		}
-
-		pulse_channel_clock(&apu.pulse1, quater_frame_clk, half_frame_clk)
-		pulse_channel_clock(&apu.pulse2, quater_frame_clk, half_frame_clk)
+		pulse_channel_clock(&apu.pulse1, quater_frame, half_frame)
+		pulse_channel_clock(&apu.pulse2, quater_frame, half_frame)
 
 		pulse1_sample: f64
 		if !pulse_channel_should_mute(apu.pulse1) {
@@ -241,11 +192,66 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 		apu.audio_sample = pulse_out + tnd_out
 	}
 
-	apu.cycle_count += 1
-
-	trigger_irq = apu.frame_interrupt
 
 	return
+
+	execute_frame_sequence :: proc(apu: ^APU) -> (frame, half_frame, quater_frame: bool) {
+		defer apu.frame_count += 1
+
+		if apu.frame_reg.sequence_mode == 0 {
+			// 4 step sequence
+			if apu.frame_count == 3729 {
+				quater_frame = true
+			}
+
+			if apu.frame_count == 7457 {
+				quater_frame = true
+				half_frame = true
+			}
+
+			if apu.frame_count == 11186 {
+				quater_frame = true
+			}
+
+			if apu.frame_count == 14915 {
+				if !apu.frame_reg.irq_inhibit_flag {
+					apu.frame_interrupt = true
+				}
+
+				quater_frame = true
+				half_frame = true
+				frame = true
+				apu.frame_count = 0
+			}
+		} else {
+			// 5 step sequence
+			if apu.frame_count == 3729 {
+				quater_frame = true
+			}
+
+			if apu.frame_count == 7457 {
+				quater_frame = true
+				half_frame = true
+			}
+
+			if apu.frame_count == 11186 {
+				quater_frame = true
+			}
+
+			if apu.frame_count == 14915 {
+				// do nothing
+			}
+
+			if apu.frame_count == 18641 {
+				quater_frame = true
+				half_frame = true
+				frame = true
+				apu.frame_count = 0
+			}
+		}
+
+		return
+	}
 }
 
 
