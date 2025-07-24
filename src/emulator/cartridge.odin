@@ -1,6 +1,7 @@
 package emulator
 
 import "base:runtime"
+import "core:fmt"
 import "core:os"
 import "core:slice"
 
@@ -75,21 +76,55 @@ cartridge_nametable_arrangement_to_mirroring :: proc(
 @(require_results)
 cartridge_make_from_filename :: proc(
 	filename: string,
+	allocator := context.allocator,
 ) -> (
 	cartridge: ^Cartridge,
 	err: Maybe(Error),
 ) {
-	rom, e := os.read_entire_file_or_err(filename)
+	rom, e := os.read_entire_file_from_filename_or_err(filename, allocator)
 	if e != nil {
-		err = errorf(.IO_Error, "could not open file '%s', %v", filename, err, severity = .Fatal)
+		err = errorf(.IO_Error, "could not open file '%s', %v", filename, e, severity = .Fatal)
 		return
 	}
 
-	defer delete(rom)
+	// defer delete(rom)
 
 	ines, ok := ines_get_from_bytes(rom)
 	if !ok {
 		err = errorf(.iNES_Error, "file '%s' is not an iNES file", filename, severity = .Fatal)
+		return
+	}
+
+	info := ines_get_info(ines)
+	ines_check_compatability(info) or_return
+	ines_check_integrity(info) or_return
+	cartridge =
+		cartridge_make_from_ines(ines, allocator) or_else fmt.panicf(
+			"could not make cartridge from file '%s', allocation error occurred",
+			filename,
+		)
+
+	return
+}
+
+cartridge_make_from_resource :: proc(
+	m: Resource_Manager,
+	handle: Resource_Handle,
+) -> (
+	cartridge: ^Cartridge,
+	err: Maybe(Error),
+) {
+	rom := resource_get_data(m, handle)
+	desc := resource_get_desc(m, handle)
+
+	ines, ok := ines_get_from_bytes(rom)
+	if !ok {
+		err = errorf(
+			.iNES_Error,
+			"resource '%s' is not a ROM resource",
+			desc.path,
+			severity = .Fatal,
+		)
 		return
 	}
 
@@ -123,8 +158,8 @@ cartridge_make_from_ines :: proc(
 	allocate_cartridge_memory(c, ines, allocator, loc) or_return
 
 	// @todo copy nvram for PRG and CHR 
-	copy_slice(c.prg_rom, ines.prg_rom)
-	copy_slice(c.chr_rom, ines.chr_rom)
+	// copy_slice(c.prg_rom, ines.prg_rom)
+	// copy_slice(c.chr_rom, ines.chr_rom)
 
 	c.mapper = mapper_make_from_number(c.mapper_number)
 
@@ -141,11 +176,14 @@ cartridge_make_from_ines :: proc(
 		if h.prg_ram_size != 0 {
 			c.prg_ram = make_slice([]u8, h.prg_ram_size, allocator, loc) or_return
 		}
+
 		if h.prg_rom_size != 0 {
-			c.prg_rom = make_slice([]u8, h.prg_rom_size, allocator, loc) or_return
+			c.prg_rom = ines.prg_rom
+			// c.prg_rom = make_slice([]u8, h.prg_rom_size, allocator, loc) or_return
 		}
 		if h.chr_rom_size != 0 {
-			c.chr_rom = make_slice([]u8, h.chr_rom_size, allocator, loc) or_return
+			c.chr_rom = ines.chr_rom
+			// c.chr_rom = make_slice([]u8, h.chr_rom_size, allocator, loc) or_return
 		}
 		if h.chr_ram_size != 0 {
 			c.chr_ram = make_slice([]u8, h.chr_ram_size, allocator, loc) or_return
@@ -161,9 +199,9 @@ cartridge_delete :: proc(
 	loc := #caller_location,
 ) -> runtime.Allocator_Error {
 	delete_slice(cartridge.vram, allocator, loc) or_return
-	delete_slice(cartridge.prg_rom, allocator, loc) or_return
+	// delete_slice(cartridge.prg_rom, allocator, loc) or_return
 	delete_slice(cartridge.prg_ram, allocator, loc) or_return
-	delete_slice(cartridge.chr_rom, allocator, loc) or_return
+	// delete_slice(cartridge.chr_rom, allocator, loc) or_return
 	delete_slice(cartridge.chr_ram, allocator, loc) or_return
 	cartridge.mapper->delete()
 

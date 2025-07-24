@@ -89,7 +89,7 @@ mapper0_write_to_address :: proc(
 		if len(c.prg_ram) != 0 {
 			addr := address & 0x7ff
 			c.prg_ram[addr - 0x6000] = data
-		} else if len(c.prg_ram) == 4 * KB {
+		} else if len(c.prg_ram) == 4 * Kilobyte {
 			addr := address & 0xfff
 			c.prg_ram[addr - 0x6000] = data
 		} else {
@@ -124,9 +124,9 @@ mapper0_read_from_address :: proc(
 		addr := get_nametable_mirror_address(address, c.mirroring)
 		data = c.vram[addr - 0x2000]
 	case 0x6000 ..< 0x8000:
-		if len(c.prg_ram) == 2 * KB {
+		if len(c.prg_ram) == 2 * Kilobyte {
 			data = c.prg_ram[address & 0x7ff]
-		} else if len(c.prg_ram) == 4 * KB {
+		} else if len(c.prg_ram) == 4 * Kilobyte {
 			data = c.prg_ram[address & 0xfff]
 		} else {
 			err = errorf(
@@ -137,7 +137,7 @@ mapper0_read_from_address :: proc(
 		}
 	case 0x8000 ..= 0xffff:
 		addr := address - 0x8000
-		if len(c.prg_rom) == 16 * KB {
+		if len(c.prg_rom) == 16 * Kilobyte {
 			if addr >= 0x4000 {
 				addr -= 0x4000
 			}

@@ -1,12 +1,15 @@
+#+feature dynamic-literals
 package nemu
 
 import "base:builtin"
 import "base:runtime"
+import "core:flags"
 import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:mem"
 import "core:os"
+import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 import "core:sync"
@@ -26,7 +29,6 @@ ASSETS_DIR_PATH :: #config(ASSETS_DIR_PATH, #directory + "assets/")
 GAMEPAD_MAPPINGS_DATA :: #load(ASSETS_DIR_PATH + "gamecontrollerdb.txt", cstring)
 
 
-
 Emulation_State :: enum {
 	Run,
 	Step_Cycle,
@@ -39,6 +41,12 @@ Emulation_State :: enum {
 	Run_Until_Address,
 }
 
+Cli_Command :: enum {
+	none,
+	add,
+	remove,
+	run,
+}
 
 // default_context: runtime.Context
 
@@ -101,33 +109,113 @@ main :: proc() {
 		}
 	}
 
-	if len(os.args) != 2 {
-		log.errorf(
-			"ERROR: Expected 1 argument of format 'nemu <rom file path>', got %d",
-			len(os.args) - 1,
-		)
-		os.exit(1)
+	// resource_tracker := resource_initialize_tracker(Resource_Type)
+
+	Rom_Meta_Data :: struct {
+		saves_count: int,
 	}
 
-	g.rom_file_path = os.args[1]
+	// info := resource_make_desc("test", Resource_Type(Palette{}))
+	// data := []byte{1, 1, 1}
+	// resource_create_with_data(&resource_tracker, info, data)
 
-	initialize()
+	// info2 := resource_make_desc("test2", Resource_Type(Rom{10}))
+	// resource_create_with_data(&resource_tracker, info2, data)
 
-	// cannot setup imgui logger before initialization
-	g.debug_ui.logger = utils.create_imgui_logger(
-		&g.debug_ui.log_buf,
-		&g.debug_ui.log_mutex,
-		opt = {.Time},
-	)
+	// info3 := resource_make_desc("test3", Resource_Type(Rom{10}))
+	// resource_desc_add_dependency(&info3, info.path)
+	// resource_desc_add_dependency(&info3, info2.path)
+	// resource_create_with_data(&resource_tracker, info3, data)
 
-	g.multi_logger = log.create_multi_logger(console_logger, g.debug_ui.logger)
-	context.logger = g.multi_logger
+	// path := resource_get_path_from_name("test3")
+	// resource, _ := resource_load_from_path(&resource_tracker, path)
 
-	th := thread.create_and_start(emulator_loop, context, .High)
-	main_loop()
 
-	thread.terminate(th, 0)
-	shutdown()
+	// for resource in resource.dependencies {
+	// 	switch d in resource.type {
+	// 	case Rom:
+	// 		fmt.print("found fkn rom", d.value)
+	// 	case Palette:
+	// 		fmt.print("found fkn palette")
+	// 	}
+	// }
+
+
+	// fmt.print(resource)
+
+	Options :: struct {
+		command:  Cli_Command `args:"pos=0"`,
+		filepath: string `args:"name=file,pos=1,required"`,
+	}
+
+	// emu.test()
+
+	opt: Options
+	flags.parse_or_exit(&opt, os.args, .Odin)
+
+	m := emu.resource_manager_make()
+	defer emu.resource_manager_destroy(&m)
+
+
+	switch opt.command {
+	case .none:
+	case .add:
+		rom := os.read_entire_file(opt.filepath) or_else panic("file not found")
+		defer delete(rom)
+		name := filepath.stem(opt.filepath)
+		emu.resource_create_with_data(name, rom)
+	case .remove:
+	case .run:
+		rom_handle: emu.Resource_Handle
+		ok: bool
+		if emu.is_ines_format_from_filename(opt.filepath) {
+			rom := os.read_entire_file(opt.filepath) or_else panic("file not found")
+			defer delete(rom)
+			name := filepath.stem(opt.filepath)
+			emu.resource_create_with_data(name, rom)
+			log.info("hit")
+			rom_handle = emu.resource_load_from_name(&m, name) or_else panic("could not load")
+		} else if emu.is_resource_format_from_filename(opt.filepath) {
+			rom_handle =
+				emu.resource_load_from_path(&m, emu.Resource_Path(opt.filepath)) or_else panic(
+					"could not load",
+				)
+		} else {
+			log.info("hit")
+			rom_handle =
+				emu.resource_load_from_name(&m, opt.filepath) or_else panic("could not load")
+				log.info(rom_handle)
+		}
+
+		if cartridge, err := emu.cartridge_make_from_resource(m, rom_handle); err != nil {
+			emu.error_log(err.?)
+			os.exit(1)
+		} else {
+			console := emu.console_make()
+			emu.console_initialize_with_cartridge(console, cartridge)
+			_ = emu.console_reset(console)
+			g.emulator.console = console
+		}
+
+		initialize_window_context()
+
+		// cannot setup imgui logger before initialization
+		g.debug_ui.logger = utils.create_imgui_logger(
+			&g.debug_ui.log_buf,
+			&g.debug_ui.log_mutex,
+			opt = {.Time},
+		)
+
+		g.multi_logger = log.create_multi_logger(console_logger, g.debug_ui.logger)
+		context.logger = g.multi_logger
+
+		th := thread.create_and_start(emulator_loop, context, .High)
+		main_loop()
+
+		thread.terminate(th, 0)
+		shutdown()
+
+	}
 
 	return
 
@@ -156,16 +244,16 @@ main :: proc() {
 }
 
 
-initialize :: proc() {
-	if cartridge, err := emu.cartridge_make_from_filename(g.rom_file_path); err != nil {
-		emu.error_log(err.?)
-		os.exit(1)
-	} else {
-		console := emu.console_make()
-		emu.console_initialize_with_cartridge(console, cartridge)
-		_ = emu.console_reset(console)
-		g.emulator.console = console
-	}
+initialize_window_context :: proc() {
+	// if cartridge, err := emu.cartridge_make_from_filename(g.rom_file_path); err != nil {
+	// 	emu.error_log(err.?)
+	// 	os.exit(1)
+	// } else {
+	// 	console := emu.console_make()
+	// 	emu.console_initialize_with_cartridge(console, cartridge)
+	// 	_ = emu.console_reset(console)
+	// 	g.emulator.console = console
+	// }
 
 	g.emulator.target_frame_time = time.Second / 60
 

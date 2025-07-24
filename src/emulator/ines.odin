@@ -1,7 +1,10 @@
 package emulator
 
 import "core:fmt"
+import "core:path/filepath"
 import "core:slice"
+
+INES_FILE_EXTENSION :: ".nes"
 
 NES20_Header :: struct {
 	// all sizes are in units of bytes
@@ -47,6 +50,11 @@ NES20 :: struct {
 	misc_rom:     []byte,
 }
 
+iNES_Info :: struct {
+	header:       NES20_Header,
+	file_variant: iNES_File_Variant,
+}
+
 Nametable_Arrangement :: enum {
 	Vertical,
 	Horizontal,
@@ -69,10 +77,6 @@ iNES_File_Variant :: enum {
 	NES_20,
 }
 
-iNES_Info :: struct {
-	header:       NES20_Header,
-	file_variant: iNES_File_Variant,
-}
 
 ines_check_compatability :: proc(info: iNES_Info) -> Maybe(Error) {
 	h := info.header
@@ -182,7 +186,7 @@ ines_get_info :: proc(ines: NES20) -> iNES_Info {
 
 @(require_results)
 ines_get_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_ok {
-	if ok = ines_is_nes_file_format(data); !ok do return
+	if ok = is_ines_format_from_bytes(data); !ok do return
 
 	variant := ines_determine_format_variant_from_bytes(data)
 
@@ -299,10 +303,14 @@ ines_get_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_o
 }
 
 @(require_results)
-ines_is_nes_file_format :: proc(data: []byte) -> bool {
+is_ines_format_from_bytes :: proc(data: []byte) -> bool {
 	// bytes 0-3 should contain $4e $45 $53 $1a
 	// (ascii "NES" followed by MS-DOS end-of-file)
 	return data[0] == 0x4e && data[1] == 0x45 && data[2] == 0x53 && data[3] == 0x1a
+}
+
+is_ines_format_from_filename :: proc(filename: string) -> bool {
+	return filepath.ext(filename) == INES_FILE_EXTENSION
 }
 
 @(require_results)
@@ -312,7 +320,7 @@ ines_determine_format_variant_from_bytes :: proc(
 	iNES_File_Variant,
 	bool,
 ) #optional_ok {
-	if !ines_is_nes_file_format(data) do return {}, false
+	if !is_ines_format_from_bytes(data) do return {}, false
 	// detection procedure follows the one recommended at
 	// https://www.nesdev.org/wiki/INES
 	// @todo take into account byte 9 and actual rom size
