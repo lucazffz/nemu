@@ -1,9 +1,11 @@
 package emulator
 
+g_console: ^Console
 
 import "../utils"
 import "base:runtime"
 import "core:fmt"
+import "core:log"
 import "core:slice"
 import "core:strings"
 
@@ -22,6 +24,7 @@ Console :: struct {
 	controller1:                     Controller,
 	controller2:                     Controller,
 	cycle_count:                     int,
+	// DMA shit
 	dma_halt_cycle:                  bool,
 	dma_oam_page:                    u8,
 	dma_oam_addr:                    u8,
@@ -31,7 +34,6 @@ Console :: struct {
 	dma_dmc_transfer:                bool,
 	dma_dmc_transfer_schedule_count: int,
 	dma_dmc_transfer_scheduled:      bool,
-	dma_dmc_schedule_on_get_cycle:   bool,
 	dma_dmc_dummy_cycle:             bool,
 	dma_dmc_alignment_cycle:         bool,
 }
@@ -117,9 +119,10 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 		mixing_stratergy = APU_Mixing_Linear_Approximation{0, 0, 0, 0, 1},
 	}
 
-	apu_initialize(&c.apu, 44100, apu_opts)
+	apu_initialize(&c.apu, 44100)
 
 	console^ = c
+	g_console = console
 }
 
 
@@ -143,7 +146,9 @@ console_execute_clk_cycle :: proc(
 
 	audio_sample_complete, trigger_irq, dmc_dma_transfer = apu_execute_clk_cycle(&console.apu)
 
-	if dmc_dma_transfer do console_schedule_dma_dmc_transfer(console)
+	if !console.dma_dmc_transfer_scheduled && !console.dma_dmc_transfer {
+		if dmc_dma_transfer do console_schedule_dma_dmc_transfer(console)
+	}
 
 	if trigger_nmi {
 		console.cpu.interrupt = .NMI
@@ -205,13 +210,36 @@ console_execute_clk_cycle :: proc(
 				}
 			}
 
-			addr := c.apu.dmc.reader_current_addr
-			c.apu.dmc.sample_buffer, _ = console_read_from_address(c, addr)
-			c.apu.dmc.sample_buffer_empty = false
-			c.apu.dmc.dma_transfer_mode = .Reload
+			d := &c.apu.dmc
+
+			d.sample_buffer, _ = console_read_from_address(c, d.reader_current_addr)
+			d.sample_buffer_empty = false
+
+			d.reader_current_addr += 1
+			if d.reader_current_addr == 0 do d.reader_current_addr = 0x8000
+
+			if d.reader_current_length > 0 {
+				d.reader_current_length -= 1
+
+			}
+
+			if d.enable && d.reader_current_length == 0 {
+				if d.ctrl_reg.loop {
+					// restart
+					// d.dma_transfer_mode = .Load
+					d.reader_current_addr = d.sample_address
+					d.reader_current_length = d.sample_length
+				} else {
+					if d.ctrl_reg.irq_enable {
+						d.interrupt = true
+					}
+				}
+			}
+
 			reset_dmc_dma(c)
 
 			reset_dmc_dma :: proc(c: ^Console) {
+				c.apu.dmc.dma_transfer_mode = .Reload
 				c.dma_dmc_transfer = false
 				c.dma_dmc_dummy_cycle = true
 				c.dma_dmc_alignment_cycle = true
@@ -291,6 +319,9 @@ console_schedule_dma_oam_transfer :: proc(console: ^Console, page: u8) {
 
 @(private)
 console_schedule_dma_dmc_transfer :: proc(console: ^Console) {
+	if console.dma_dmc_transfer_scheduled || console.dma_dmc_transfer {
+		log.warn("sheduled DMA DMC transfer while ongoing")
+	}
 	console.dma_dmc_transfer_scheduled = true
 	console.dma_dmc_transfer = false
 
@@ -336,12 +367,10 @@ console_write_to_address :: proc(
 		// registers are mirrored every 8 bytes from $2008-$3fff
 		address_offset := u8(address & 0x7)
 		ppu_write_to_mmio_register(&console.ppu, console.cartridge, data, address_offset) or_return
-	case 0x4000 ..< 0x4014, 0x4017:
+	case 0x4000 ..< 0x4014, 0x4015, 0x4017:
 		apu_write_to_address(&console.apu, data, address)
 	case 0x4014:
 		console_schedule_dma_oam_transfer(console, data)
-	case 0x4015:
-		apu_write_to_address(&console.apu, data, address)
 	case 0x04016:
 		controller_write(&console.controller1, data)
 		controller_write(&console.controller2, data)

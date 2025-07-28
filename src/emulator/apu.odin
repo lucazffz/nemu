@@ -124,6 +124,7 @@ DMC :: struct {
 	sample_buffer_empty:    bool,
 	timer_value:            u16,
 	interrupt:              bool,
+	dma_transfer:           bool,
 	dma_transfer_mode:      enum {
 		Load,
 		Reload,
@@ -215,7 +216,6 @@ apu_initialize :: proc(apu: ^APU, #any_int sample_rate: uint, opts := apu_defaul
 
 	a.noise.feedback_shifter_value = 1
 
-	a.dmc.sample_buffer_empty = true
 
 	apu^ = a
 }
@@ -246,6 +246,8 @@ apu_execute_clk_cycle :: proc(
 		if apu.frame_interrupt do trigger_irq = true
 	}
 
+	dma_transfer = delta_modulation_channel_clock(&apu.dmc)
+
 
 	// update once per CPU clock cycle
 	if apu.cycle_count % 3 == 0 {
@@ -260,7 +262,7 @@ apu_execute_clk_cycle :: proc(
 		pulse_channel_apu_clock(&apu.pulse2, quater_frame, half_frame)
 		noise_channel_apu_clock(&apu.noise, quater_frame, half_frame)
 		triangle_channel_apu_clock(&apu.triangle, quater_frame, half_frame)
-		dma_transfer = delta_modulation_channel_apu_clock(&apu.dmc, quater_frame, half_frame)
+		delta_modulation_channel_apu_clock(&apu.dmc, quater_frame, half_frame)
 
 		pulse1_sample := get_pulse_channel_output(apu.pulse1)
 		pulse2_sample := get_pulse_channel_output(apu.pulse2)
@@ -409,6 +411,7 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 	case 0x4010:
 		// DMC control
 		apu.dmc.ctrl_reg = auto_cast data
+		apu.dmc.timer_value = apu_dmc_rate_table[apu.dmc.ctrl_reg.rate_index]
 	case 0x4011:
 		// DMC load counter
 		apu.dmc.output_level = data & 0x7f // output level is 7 bits
@@ -416,10 +419,12 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 		// DMC sample address
 		// sample address = b11AAAAAA.AA000000
 		apu.dmc.sample_address = 0xc000 | (u16(data) << 6)
+		apu.dmc.reader_current_addr = apu.dmc.sample_address
 	case 0x4013:
 		// DMC sample length
 		// sample length = b0000LLLL.LLLL0001
 		apu.dmc.sample_length = (u16(data) << 4) | 1
+		apu.dmc.reader_current_length = apu.dmc.sample_length
 	case 0x4015:
 		// status
 		apu.pulse1.enable = data & 0x01 > 0
@@ -430,10 +435,6 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 
 		// side effects
 		apu.dmc.interrupt = false
-		apu.dmc.dma_transfer_mode = .Load
-		if apu.dmc.enable && apu.dmc.reader_current_length == 0 {
-			apu.dmc.reader_current_length = apu.dmc.sample_length
-		}
 	case 0x4017:
 		// APU frame counter
 		apu.frame_reg = auto_cast data
@@ -474,25 +475,26 @@ apu_read_from_address :: proc(apu: ^APU, address: u16) -> (data: u8, err: Maybe(
 
 @(private = "file")
 get_delta_modulation_channel_output :: proc(d: DMC) -> u8 {
-	// will output sample independent of weather or not the DMC enable
-	// flag is set
-	if d.output_silence {
-		return 0
-	} else {
-		return d.output_level
+	return d.output_level
+}
+
+
+@(private = "file")
+delta_modulation_channel_clock :: proc(d: ^DMC) -> (dma_transfer: bool) {
+	if !d.enable {
+		d.sample_length = 0
 	}
+
+	if d.sample_buffer_empty && d.reader_current_length > 0 {
+		dma_transfer = true
+	}
+
+	return
 }
 
 @(private = "file")
-delta_modulation_channel_apu_clock :: proc(
-	d: ^DMC,
-	quater_frame, half_frame: bool,
-) -> (
-	dma_transfer: bool,
-) {
-	if !d.enable {
-		d.reader_current_length = 0
-	}
+delta_modulation_channel_apu_clock :: proc(d: ^DMC, quater_frame, half_frame: bool) // dma_transfer: bool,
+{
 
 	if d.timer_value > 0 {
 		d.timer_value -= 1
@@ -502,9 +504,11 @@ delta_modulation_channel_apu_clock :: proc(
 		step_output: {
 			if !d.output_silence {
 				// increment or decrement output level
-				add := d.output_shifter_value & 0x1 > 0
-				d.output_level = d.output_level + 2 if add else d.output_level - 2
-				d.output_level = math.clamp(d.output_level, 0, 127)
+				if d.output_shifter_value & 0x01 == 1 {
+					if d.output_level <= 125 do d.output_level += 2
+				} else {
+					if d.output_level >= 2 do d.output_level -= 2
+				}
 			}
 
 			d.output_shifter_value >>= 1
@@ -519,42 +523,22 @@ delta_modulation_channel_apu_clock :: proc(
 					d.output_silence = false
 					// empty sample buffer info shifter
 					d.output_shifter_value = d.sample_buffer
-					d.sample_buffer = 0
 					d.sample_buffer_empty = true
+					// if d.reader_current_length > 0 {
+					// 	dma_transfer = true
+					// }
 				}
 			}
 		}
 	}
 
-	step_reader: {
-		if d.sample_buffer_empty && d.reader_current_length > 0 {
-			dma_transfer = true
 
-			d.reader_current_addr += 1
-			// wrap around to $8000
-			if d.reader_current_addr == 0 do d.reader_current_addr = 0x8000
-
-			d.reader_current_length -= 1
-			if d.reader_current_length == 0 {
-				if d.ctrl_reg.loop {
-					// restart
-					d.reader_current_addr = d.sample_address
-					d.reader_current_length = d.sample_length
-				} else {
-					if d.ctrl_reg.irq_enable {
-						d.interrupt = true
-					}
-				}
-			}
-		}
-	}
-
-	return
+	// return
 }
 
-apu_is_dmc_sample_buffer_empty :: proc(apu: APU) -> bool {
-	return apu.dmc.sample_buffer_empty
-}
+// apu_is_dmc_sample_buffer_empty :: proc(apu: APU) -> bool {
+// 	return apu.dmc.sample_buffer_empty
+// }
 
 @(private = "file")
 get_noise_channel_output :: proc(n: Noise_Channel) -> u8 {
