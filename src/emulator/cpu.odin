@@ -26,11 +26,6 @@ CPU :: struct {
 	decmial_mode:        bool,
 	// will be nil if an interrupt is being handled
 	current_instruction: Maybe(Instruction),
-	dma_page:            u8,
-	dma_addr:            u8,
-	dma_data:            u8,
-	dma_transfer:        bool,
-	dma_dummy:           bool,
 }
 
 PAGE_1_BASE_ADDRESS :: 0x0100
@@ -54,7 +49,7 @@ Processor_Status_Flags :: enum {
 }
 
 Instruction_Type :: enum {
-	// alu instructions
+	// ALU instructions
 	BIT  = 0, // Bit Test
 	AND  = 1, // Logical AND
 	EOR  = 2, // Exclusive OR
@@ -227,7 +222,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 		console.cpu.current_instruction = nil
 
 		// handle_interrupt and execute_instruction are mutually exclusive
-		// meaning both will never be executed simultaneously
+		// meaning both will never be executed in the same procedure call
 		switch console.cpu.interrupt {
 		case .Reset:
 			handle_interrupt(console)
@@ -313,9 +308,14 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 		start_pc := console.cpu.pc
 		op_addr: u16
 		pc_incremented: bool
-		cycles := instr.cycle_count
+		page_crossed: bool
 
 		defer {
+			cycles := instr.cycle_count
+			if page_crossed {
+				cycles += instr.page_boundary_extra_cycles
+			}
+
 			console.cpu.current_instruction = instr
 			console.cpu.instruction_count += 1
 			console.cpu.stall_count = cycles - 1
@@ -326,28 +326,21 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			}
 		}
 
-		// pre-calculate address for modes that need it
-		#partial switch instr.addressing_mode {
-		case .Accumulator, .Implied, .Relative:
-		// no address to fetch
-		case:
-			page_crossed: bool
+		// not used by Implied, Accumulator, and Relative instruction modes
+		calculate_operand_addr: {
 			if op_addr, page_crossed, err = get_instruction_operand_address(
 				console,
 				instr.addressing_mode,
 			); err != nil {
+				msg := "could not read instruction (%v) operand using addressing mode %v: \"%s\""
 				return errorf(
 					.CPU_Error,
-					"could not read instruction (%v) operand using addressing mode %v: \"%s\"",
+					msg,
 					instr.type,
 					instr.addressing_mode,
 					err.?.msg,
 					severity = .Fatal,
 				)
-			}
-
-			if page_crossed {
-				cycles += instr.page_boundary_extra_cycles
 			}
 		}
 
@@ -809,11 +802,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 				address := console.cpu.pc + 1
 				rel_addr: u8
 				if rel_addr, err = console_read_from_address(console, address); err != nil {
-					err = errorf(
-						.CPU_Error,
-						"could not read relative address from $%04X",
-						address,
-					)
+					err = errorf(.CPU_Error, "could not read relative address from $%04X", address)
 				}
 
 				// + 2 to point to next instruction
@@ -926,13 +915,12 @@ get_instruction_operand_address :: proc(
 		return_addr = base_addr + u16(cpu.y)
 		page_crossed = is_page_crossed(base_addr, return_addr)
 	case .Implied, .Accumulator, .Relative:
-		// Implied, Accumulator, and Relative modes don't use this function.
-		panic(fmt.tprintf("tried to fetch instruction operand using address mode %v", mode))
+	// Implied, Accumulator, and Relative modes don't use this function.
+	// panic(fmt.tprintf("tried to fetch instruction operand using address mode %v", mode))
 	}
 
 	return
 }
-
 
 @(require_results)
 is_page_crossed :: proc(address1, address2: u16) -> bool {

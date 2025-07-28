@@ -1,9 +1,15 @@
 package emulator
 
+import "base:runtime"
 import "core:log"
 import "core:math"
 import "core:os"
 import "core:slice"
+
+@(private = "file")
+apu_default_opts := APU_Options {
+	mixing_stratergy = APU_Mixing_Linear_Approximation{1, 1, 1, 1, 1},
+}
 
 APU :: struct {
 	frame_reg:                    bit_field u8 {
@@ -24,6 +30,7 @@ APU :: struct {
 	audio_time_per_apu_clk:       f64,
 	audio_time:                   f64,
 	sample_buf:                   [dynamic]f64,
+	opts:                         APU_Options,
 }
 
 Pulse_Channel :: struct {
@@ -102,41 +109,116 @@ Noise_Channel :: struct {
 }
 
 DMC :: struct {
+	enable:                 bool,
+	ctrl_reg:               bit_field u8 {
+		rate_index: u8   | 4,
+		_unused:    u8   | 2,
+		loop:       bool | 1,
+		irq_enable: bool | 1,
+	},
+	load_counter:           u8,
+	sample_address:         u16,
+	sample_length:          u16,
+	// --- Internal state variables
+	sample_buffer:          u8,
+	sample_buffer_empty:    bool,
+	timer_value:            u16,
+	interrupt:              bool,
+	dma_transfer_mode:      enum {
+		Load,
+		Reload,
+	},
+	// memory reader unit
+	reader_current_addr:    u16,
+	reader_current_length:  u16,
+	// output unit
+	output_silence:         bool,
+	output_shifter_value:   u8,
+	ouput_shifter_bits_rem: u8,
+	output_level:           u8,
 }
 
-// @(private = "file")
-// Square_Wave_Data :: struct {
-// 	frequency:     f64,
-// 	harmonics_num: int,
-// 	duty_cycle:    f64,
-// }
+APU_Options :: struct {
+	mixing_stratergy: union {
+		APU_Mixing_Lookup_Table,
+		APU_Mixing_Linear_Approximation,
+	},
+}
 
-// @(private = "file")
-// Triangle_Wave_Data :: struct {
-// 	frequency:     f64,
-// 	harmonics_num: int,
-// }
+APU_Mixing_Lookup_Table :: struct {
+}
 
-// @(private = "file")
-// Noise_Wave_Data :: struct {
-// }
+APU_Mixing_Linear_Approximation :: struct {
+	pulse1_vol:   f64,
+	pulse2_vol:   f64,
+	triangle_vol: f64,
+	noise_vol:    f64,
+	dmc_vol:      f64,
+}
 
-apu_initialize :: proc(apu: ^APU, sample_rate: f64) {
-	// @note Not setting irq inhibit flag on startup causes issues
-	// in Super Mario Bros, and probably more games.
-	apu.frame_reg.irq_inhibit_flag = true
-	apu.audio_time_per_system_sample = 1.0 / sample_rate
-	apu.audio_time_per_apu_clk = 1.0 / 5369318.0 // ppu/apu clk freq
+apu_make :: proc(
+	allocator := context.allocator,
+	loc := #caller_location,
+) -> (
+	apu: APU,
+	err: runtime.Allocator_Error,
+) {
 
+	apu.sample_buf = make_dynamic_array([dynamic]f64, allocator, loc) or_return
+	return
+}
+
+apu_delete :: proc(
+	apu: APU,
+	allocator := context.allocator,
+	loc := #caller_location,
+) -> runtime.Allocator_Error {
+	context.allocator = allocator
+	delete_dynamic_array(apu.sample_buf, loc) or_return
+	return nil
+}
+
+apu_set_options :: proc(apu: ^APU, opts: APU_Options) {
+	switch &v in opts.mixing_stratergy {
+	case APU_Mixing_Lookup_Table:
+	case APU_Mixing_Linear_Approximation:
+		assert_range(v.pulse1_vol)
+		assert_range(v.pulse2_vol)
+		assert_range(v.triangle_vol)
+		assert_range(v.noise_vol)
+		assert_range(v.dmc_vol)
+	}
+
+	apu.opts = opts
+
+	assert_range :: proc(vol: f64) {
+		assert(vol >= 0 && vol <= 1)
+	}
+}
+
+apu_initialize :: proc(apu: ^APU, #any_int sample_rate: uint, opts := apu_default_opts) {
+	a := APU{}
+
+	a.opts = opts
+
+	a.audio_time_per_system_sample = 1.0 / f64(sample_rate)
+	a.audio_time_per_apu_clk = 1.0 / 5369318.0 // ppu/apu clk freq
 
 	// The sweep unit of pulse channel 1 and 2 negate the period using
 	// one's respectively two's complement.
-	apu.pulse1.sweep_negate_two_comp = false
-	apu.pulse2.sweep_negate_two_comp = true
+	a.pulse1.sweep_negate_two_comp = false
+	a.pulse2.sweep_negate_two_comp = true
 
-	apu.noise.feedback_shifter_value = 1
+	// @note Not setting irq inhibit flag on startup causes issues
+	// in Super Mario Bros, and probably more games.
+	a.frame_reg.irq_inhibit_flag = true
+
+	a.noise.feedback_shifter_value = 1
+
+	a.dmc.sample_buffer_empty = true
+
+	apu^ = a
 }
-
 
 apu_get_sample :: proc(apu: ^APU) -> (sample: f64) {
 	sample = math.sum(apu.sample_buf[:]) / f64(len(apu.sample_buf))
@@ -145,7 +227,13 @@ apu_get_sample :: proc(apu: ^APU) -> (sample: f64) {
 
 }
 
-apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq: bool) {
+apu_execute_clk_cycle :: proc(
+	apu: ^APU,
+) -> (
+	sample_complete: bool,
+	trigger_irq: bool,
+	dma_transfer: bool,
+) {
 	apu.audio_time += apu.audio_time_per_apu_clk
 	if apu.audio_time >= apu.audio_time_per_system_sample {
 		apu.audio_time -= apu.audio_time_per_system_sample
@@ -154,33 +242,48 @@ apu_execute_clk_cycle :: proc(apu: ^APU) -> (sample_complete: bool, trigger_irq:
 
 	defer {
 		apu.cycle_count += 1
-		trigger_irq = apu.frame_interrupt
+		if apu.dmc.interrupt do trigger_irq = true
+		if apu.frame_interrupt do trigger_irq = true
 	}
 
 
 	// update once per CPU clock cycle
 	if apu.cycle_count % 3 == 0 {
-		triangle_channel_clock(&apu.triangle)
+		triangle_channel_cpu_clock(&apu.triangle)
 	}
 
 	// update once per frame (cpu_cycle / 2 <=> ppu_cycle / 6)
 	if apu.cycle_count % 6 == 0 {
 		frame, half_frame, quater_frame := execute_frame_sequence(apu)
 
-		pulse_channel_frame_clock(&apu.pulse1, quater_frame, half_frame)
-		pulse_channel_frame_clock(&apu.pulse2, quater_frame, half_frame)
-		noise_channel_frame_clock(&apu.noise, quater_frame, half_frame)
-		triangle_channel_frame_clock(&apu.triangle, quater_frame, half_frame)
+		pulse_channel_apu_clock(&apu.pulse1, quater_frame, half_frame)
+		pulse_channel_apu_clock(&apu.pulse2, quater_frame, half_frame)
+		noise_channel_apu_clock(&apu.noise, quater_frame, half_frame)
+		triangle_channel_apu_clock(&apu.triangle, quater_frame, half_frame)
+		dma_transfer = delta_modulation_channel_apu_clock(&apu.dmc, quater_frame, half_frame)
 
 		pulse1_sample := get_pulse_channel_output(apu.pulse1)
 		pulse2_sample := get_pulse_channel_output(apu.pulse2)
 		triangle_sample := get_triangle_channel_output(apu.triangle)
 		noise_sample := get_noise_channel_output(apu.noise)
+		dmc_sample := get_delta_modulation_channel_output(apu.dmc)
 
-		pulse_out := f64(apu_pulse_mixer_table[pulse1_sample + pulse2_sample])
-		tnd_out := 0.00851 * f64(triangle_sample) + 0.00494 * f64(noise_sample)
+		pulse_out, tnd_out: f64
+		switch v in apu.opts.mixing_stratergy {
+		case APU_Mixing_Lookup_Table:
+			pulse_out = f64(apu_mixer_pulse_table[pulse1_sample + pulse2_sample])
+			tnd_out = apu_mixer_tnd_table[3 * triangle_sample + 2 * noise_sample + dmc_sample]
+		case APU_Mixing_Linear_Approximation:
+			pulse_out =
+				0.00752 * (f64(pulse1_sample) * v.pulse1_vol + f64(pulse2_sample) * v.pulse2_vol)
+			tnd_out =
+				0.00851 * f64(triangle_sample) * v.triangle_vol +
+				0.00494 * f64(noise_sample) * v.noise_vol +
+				0.00335 * f64(dmc_sample) * v.dmc_vol
+		}
 
 		sample_out := pulse_out + tnd_out
+
 		append_elem(&apu.sample_buf, sample_out)
 	}
 
@@ -304,19 +407,33 @@ apu_write_to_address :: proc(apu: ^APU, data: u8, address: u16) {
 		// noise length counter
 		apu.noise.length_counter_value = apu_length_counter_table[data >> 3]
 	case 0x4010:
-	// DMC control
+		// DMC control
+		apu.dmc.ctrl_reg = auto_cast data
 	case 0x4011:
-	// DMC load counter
+		// DMC load counter
+		apu.dmc.output_level = data & 0x7f // output level is 7 bits
 	case 0x4012:
-	// DMC sample address
+		// DMC sample address
+		// sample address = b11AAAAAA.AA000000
+		apu.dmc.sample_address = 0xc000 | (u16(data) << 6)
 	case 0x4013:
-	// DMC sample length
+		// DMC sample length
+		// sample length = b0000LLLL.LLLL0001
+		apu.dmc.sample_length = (u16(data) << 4) | 1
 	case 0x4015:
 		// status
 		apu.pulse1.enable = data & 0x01 > 0
 		apu.pulse2.enable = data & 0x02 > 0
 		apu.triangle.enable = data & 0x04 > 0
 		apu.noise.enable = data & 0x08 > 0
+		apu.dmc.enable = data & 0x10 > 0
+
+		// side effects
+		apu.dmc.interrupt = false
+		apu.dmc.dma_transfer_mode = .Load
+		if apu.dmc.enable && apu.dmc.reader_current_length == 0 {
+			apu.dmc.reader_current_length = apu.dmc.sample_length
+		}
 	case 0x4017:
 		// APU frame counter
 		apu.frame_reg = auto_cast data
@@ -340,7 +457,9 @@ apu_read_from_address :: proc(apu: ^APU, address: u16) -> (data: u8, err: Maybe(
 		)
 	case 0x4015:
 		data =
+			(u8(apu.dmc.interrupt) << 7) +
 			(u8(apu.frame_interrupt) << 6) +
+			(u8(apu.dmc.reader_current_length > 0) << 4) +
 			(u8(apu.noise.length_counter_value > 0) << 3) +
 			(u8(apu.triangle.length_counter_value > 0) << 2) +
 			(u8(apu.pulse1.length_counter_value > 0) << 1) +
@@ -351,6 +470,90 @@ apu_read_from_address :: proc(apu: ^APU, address: u16) -> (data: u8, err: Maybe(
 	}
 
 	return
+}
+
+@(private = "file")
+get_delta_modulation_channel_output :: proc(d: DMC) -> u8 {
+	// will output sample independent of weather or not the DMC enable
+	// flag is set
+	if d.output_silence {
+		return 0
+	} else {
+		return d.output_level
+	}
+}
+
+@(private = "file")
+delta_modulation_channel_apu_clock :: proc(
+	d: ^DMC,
+	quater_frame, half_frame: bool,
+) -> (
+	dma_transfer: bool,
+) {
+	if !d.enable {
+		d.reader_current_length = 0
+	}
+
+	if d.timer_value > 0 {
+		d.timer_value -= 1
+	} else {
+		d.timer_value = apu_dmc_rate_table[d.ctrl_reg.rate_index]
+
+		step_output: {
+			if !d.output_silence {
+				// increment or decrement output level
+				add := d.output_shifter_value & 0x1 > 0
+				d.output_level = d.output_level + 2 if add else d.output_level - 2
+				d.output_level = math.clamp(d.output_level, 0, 127)
+			}
+
+			d.output_shifter_value >>= 1
+
+			d.ouput_shifter_bits_rem -= 1
+			if d.ouput_shifter_bits_rem == 0 {
+				// start new output cycle
+				d.ouput_shifter_bits_rem = 8
+				if d.sample_buffer_empty {
+					d.output_silence = true
+				} else {
+					d.output_silence = false
+					// empty sample buffer info shifter
+					d.output_shifter_value = d.sample_buffer
+					d.sample_buffer = 0
+					d.sample_buffer_empty = true
+				}
+			}
+		}
+	}
+
+	step_reader: {
+		if d.sample_buffer_empty && d.reader_current_length > 0 {
+			dma_transfer = true
+
+			d.reader_current_addr += 1
+			// wrap around to $8000
+			if d.reader_current_addr == 0 do d.reader_current_addr = 0x8000
+
+			d.reader_current_length -= 1
+			if d.reader_current_length == 0 {
+				if d.ctrl_reg.loop {
+					// restart
+					d.reader_current_addr = d.sample_address
+					d.reader_current_length = d.sample_length
+				} else {
+					if d.ctrl_reg.irq_enable {
+						d.interrupt = true
+					}
+				}
+			}
+		}
+	}
+
+	return
+}
+
+apu_is_dmc_sample_buffer_empty :: proc(apu: APU) -> bool {
+	return apu.dmc.sample_buffer_empty
 }
 
 @(private = "file")
@@ -379,7 +582,7 @@ get_noise_channel_output :: proc(n: Noise_Channel) -> u8 {
 }
 
 @(private = "file")
-noise_channel_frame_clock :: proc(n: ^Noise_Channel, quater_frame, half_frame: bool) {
+noise_channel_apu_clock :: proc(n: ^Noise_Channel, quater_frame, half_frame: bool) {
 	if quater_frame {
 		update_envelope: {
 			// Both the envelope and sweep use an identical divider circuit to
@@ -444,7 +647,7 @@ get_triangle_channel_output :: proc(t: Triangle_Channel) -> u8 {
 }
 
 @(private = "file")
-triangle_channel_clock :: proc(t: ^Triangle_Channel) {
+triangle_channel_cpu_clock :: proc(t: ^Triangle_Channel) {
 	update_timer: if t.timer_value > 0 {
 		t.timer_value -= 1
 	} else {
@@ -473,7 +676,7 @@ triangle_channel_clock :: proc(t: ^Triangle_Channel) {
 }
 
 @(private = "file")
-triangle_channel_frame_clock :: proc(t: ^Triangle_Channel, quater_frame, half_frame: bool) {
+triangle_channel_apu_clock :: proc(t: ^Triangle_Channel, quater_frame, half_frame: bool) {
 	if quater_frame {
 		// update linear counter
 		if !t.linear_counter_reset {
@@ -531,7 +734,7 @@ get_pulse_channel_output :: proc(p: Pulse_Channel) -> u8 {
 }
 
 @(private = "file")
-pulse_channel_frame_clock :: proc(p: ^Pulse_Channel, quater_frame, half_frame: bool) {
+pulse_channel_apu_clock :: proc(p: ^Pulse_Channel, quater_frame, half_frame: bool) {
 	update_sweep_target_period: {
 		// The sweep target period is continuously updated (combinatorial
 		// hardare circuit in NES) and will affect the wave amplitude. Only
@@ -611,47 +814,6 @@ pulse_channel_frame_clock :: proc(p: ^Pulse_Channel, quater_frame, half_frame: b
 
 }
 
-
-// @(private = "file")
-// sample_square_wave :: proc "contextless" (data: Square_Wave_Data, t: f64) -> f64 {
-// 	sawtooth_wave1, sawtooth_wave2: f64
-// 	p := data.duty_cycle * 2 * math.PI
-
-// 	for i in 1 ..= f64(data.harmonics_num) {
-// 		c := 2 * math.PI * i * data.frequency * t
-// 		sawtooth_wave1 += -fast_approx_sin(c) / i
-// 		sawtooth_wave2 += -fast_approx_sin(c - p * i) / i
-// 	}
-
-// 	return (sawtooth_wave1 - sawtooth_wave2) / math.PI
-// }
-
-// @(private = "file")
-// fast_approx_sin :: proc "contextless" (x: f64) -> f64 {
-// 	j := x * 0.15915
-// 	j = j - f64(int(j))
-// 	return 20.785 * j * (j - 0.5) * (j - 1.0)
-// }
-
-// @(private = "file")
-// sample_triangle_wave :: proc "contextless" (data: Triangle_Wave_Data, t: f64) -> f64 {
-// 	sum: f64
-// 	for i in 0 ..< f64(data.harmonics_num) {
-// 		n := 2 * i + 1
-// 		c := 2 * math.PI * n * data.frequency * t
-// 		sum += (math.pow(-1, i) / (n * n)) * fast_approx_sin(c)
-// 	}
-
-// 	return sum * 8 / (math.PI * math.PI)
-// }
-
-// @(private = "file")
-// sample_noise_wave :: proc "contextless" (data: Noise_Wave_Data, t: f64) -> f64 {
-// 	return 0
-// }
-
-// --- Auxiliary functions
-
 @(private = "file")
 sweep_target_period_in_range :: proc(#any_int target_period: u16) -> bool {
 	if target_period >= 0 && target_period <= 0x7ff {
@@ -660,30 +822,4 @@ sweep_target_period_in_range :: proc(#any_int target_period: u16) -> bool {
 
 	return false
 }
-
-// @(private = "file")
-// get_frequency_from_channel_period :: proc(#any_int period: u16, cpu_cycles_per_tick: int) -> f64 {
-// 	return CPU_CLK_FREQUENCY / ((32.0 / f64(cpu_cycles_per_tick)) * f64(period + 1))
-// }
-
-// @(private = "file")
-// get_amplitude_from_channel_volume :: proc(#any_int volume: u8) -> f64 {
-// 	return f64(volume) / 15
-// }
-
-// @(private = "file")
-// get_duty_fraction_from_channel_duty :: proc(#any_int duty: u8) -> f64 {
-// 	switch duty & 0x03 {
-// 	case 0:
-// 		return 0.125
-// 	case 1:
-// 		return 0.25
-// 	case 2:
-// 		return 0.5
-// 	case 3:
-// 		return 0.75
-// 	}
-
-// 	panic("unreachable")
-// }
 
