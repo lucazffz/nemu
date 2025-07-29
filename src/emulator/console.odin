@@ -14,29 +14,17 @@ ASSETS_DIR_PATH :: #directory + "assets/"
 CPU_CLK_FREQUENCY :: 1789773.0
 
 Console :: struct {
-	cpu:                     CPU,
-	ppu:                     PPU,
-	apu:                     APU,
+	cpu:         CPU,
+	ppu:         PPU,
+	apu:         APU,
 	// 2 KB of internal ram ($0000 - $07FF)
-	ram:                     []u8,
-	palette:                 ^Palette,
-	cartridge:               ^Cartridge,
-	controller1:             Controller,
-	controller2:             Controller,
-	cycle_count:             int,
-	// DMA shit
-	dma_halt_cycle:          bool,
-	dma_oam_page:            u8,
-	dma_oam_addr:            u8,
-	dma_oam_data:            u8,
-	dma_oam_alignment_cycle: bool, // DMA halt/alignment cycle
-	dma_oam_transfer:        bool,
-	dma_oam_scheduled:       bool,
-	dma_dmc_transfer:        bool,
-	dma_dmc_schedule_count:  int,
-	dma_dmc_scheduled:       bool,
-	dma_dmc_dummy_cycle:     bool,
-	dma_dmc_alignment_cycle: bool,
+	ram:         []u8,
+	palette:     ^Palette,
+	cartridge:   ^Cartridge,
+	controller1: Controller,
+	controller2: Controller,
+	cycle_count: int,
+	dma:         DMA,
 }
 
 CPU_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1fff, .Closed} // 2KB ram mirrored 4 times
@@ -117,9 +105,10 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 	c.cartridge = cartridge
 
 	apu_opts: APU_Options = {
-		mixing_stratergy = APU_Mixing_Linear_Approximation{0, 0, 0, 0, 1},
+		mixing_stratergy = APU_Mixing_Linear_Approximation{1, 1, 0, 0, 0},
 	}
 
+	dma_initialize(&c.dma)
 	apu_initialize(&c.apu, 44100, apu_opts)
 
 	console^ = c
@@ -145,11 +134,7 @@ console_execute_clk_cycle :: proc(
 		pixel_buffer,
 	)
 
-	audio_sample_complete, trigger_irq, dmc_dma_transfer = apu_execute_clk_cycle(&console.apu)
-
-	if !console.dma_dmc_scheduled && !console.dma_dmc_transfer {
-		if dmc_dma_transfer do console_schedule_dma_dmc_transfer(console)
-	}
+	audio_sample_complete, trigger_irq = apu_execute_clk_cycle(&console.apu, &console.dma)
 
 	if trigger_nmi {
 		console.cpu.interrupt = .NMI
@@ -158,199 +143,14 @@ console_execute_clk_cycle :: proc(
 	}
 
 	if console.cycle_count % 3 == 0 {
-		if should_execute_dma_transfer(console) {
-			dma_transfer_execute_clk_cycle(console)
-		} else {
+		halt_cpu := dma_execute_clk_cycle(console)
+		if !halt_cpu {
 			cpu_complete, err = cpu_execute_clk_cycle(console)
 		}
 	}
 
 	console.cycle_count += 1
 	return
-
-	should_execute_dma_transfer :: proc(c: ^Console) -> (should: bool) {
-		if c.dma_oam_transfer {
-			return true
-		}
-
-		if c.dma_dmc_transfer {
-			return true
-		}
-
-		if c.dma_oam_scheduled {
-			if cpu_get_last_executed_cycle_type(c.cpu) == .Read {
-				c.dma_oam_transfer = true
-				c.dma_oam_scheduled = false
-				should = true
-
-			}
-		}
-
-		if c.dma_dmc_scheduled {
-			c.dma_dmc_schedule_count -= 1
-			if c.dma_dmc_schedule_count <= 0 {
-				if cpu_get_last_executed_cycle_type(c.cpu) == .Read {
-					c.dma_dmc_scheduled = false
-					c.dma_dmc_transfer = true
-					should = true
-				}
-			}
-		}
-
-		return
-	}
-
-	dma_transfer_execute_clk_cycle :: proc(c: ^Console) {
-		dmc_active: bool
-
-		dmc_execute: if c.dma_dmc_transfer {
-			if c.dma_halt_cycle {
-				c.dma_halt_cycle = false
-				return
-			}
-
-			dmc_active = true
-			if c.dma_dmc_dummy_cycle {
-				c.dma_dmc_dummy_cycle = false
-				return
-			}
-
-			if c.dma_dmc_alignment_cycle {
-				c.dma_dmc_alignment_cycle = false
-				if is_apu_clk2(c^) {
-					return
-				}
-			}
-
-			d := &c.apu.dmc
-
-			d.sample_buffer, _ = console_read_from_address(c, d.reader_current_addr)
-			d.sample_buffer_empty = false
-
-			d.reader_current_addr += 1
-			if d.reader_current_addr == 0 do d.reader_current_addr = 0x8000
-
-			if d.reader_current_length > 0 {
-				d.reader_current_length -= 1
-
-			}
-
-			if d.enable && d.reader_current_length == 0 {
-				if d.ctrl_reg.loop {
-					// restart
-					// d.dma_transfer_mode = .Load
-					d.reader_current_addr = d.sample_address
-					d.reader_current_length = d.sample_length
-				} else {
-					if d.ctrl_reg.irq_enable {
-						d.interrupt = true
-					}
-				}
-			}
-
-			reset_dmc_dma(c)
-
-			reset_dmc_dma :: proc(c: ^Console) {
-				c.apu.dmc.dma_transfer_mode = .Reload
-				c.dma_dmc_transfer = false
-				c.dma_dmc_dummy_cycle = true
-				c.dma_dmc_alignment_cycle = true
-				if !c.dma_oam_transfer {
-					c.dma_halt_cycle = true
-				}
-			}
-		}
-
-		oam_execute: if c.dma_oam_transfer {
-			if c.dma_halt_cycle {
-				c.dma_halt_cycle = false
-				return
-			}
-
-			if dmc_active {
-				c.dma_oam_alignment_cycle = true
-				return
-			}
-
-			if c.dma_oam_alignment_cycle {
-				c.dma_oam_alignment_cycle = false
-				// DMA can only read in read get cycles (apu_clk1) so
-				// clear dummy read flag if next cycle is apu_clk1
-				if is_apu_clk2(c^) {
-					return
-				}
-
-			}
-
-			if is_apu_clk1(c^) {
-				// read on get cycle
-				addr := u16(c.dma_oam_page) << 8 | u16(c.dma_oam_addr)
-				c.dma_oam_data, _ = console_read_from_address(c, addr)
-			}
-
-			if is_apu_clk2(c^) {
-				// write on put cycle
-				ppu_oam_write_to_address(&c.ppu, c.dma_oam_data, c.dma_oam_addr)
-				c.dma_oam_addr += 1
-
-				if c.dma_oam_addr == 0x0 {
-					reset_oam_dma(c)
-				}
-
-				reset_oam_dma :: proc(c: ^Console) {
-					c.dma_oam_transfer = false
-					c.dma_oam_alignment_cycle = true
-					if !c.dma_dmc_transfer {
-						c.dma_halt_cycle = true
-					}
-				}
-			}
-		}
-
-	}
-}
-
-// @note clk1 is assumed to be even cpu clock cycles and clk2 uneven.
-// This is not technically correct since the NES CPU and APU can
-// power into either of 2 alginments relative to each other. However,
-// this emulator have both start at 0.
-@(private)
-is_apu_clk1 :: proc(c: Console) -> bool {
-	return c.cycle_count & 0x1 == 0
-}
-
-@(private)
-is_apu_clk2 :: proc(c: Console) -> bool {
-	return c.cycle_count & 0x1 == 1
-}
-
-@(private)
-console_schedule_dma_oam_transfer :: proc(console: ^Console, page: u8) {
-	console.dma_oam_scheduled = true
-	console.dma_oam_transfer = false
-	console.dma_oam_addr = 0
-	console.dma_oam_page = page
-}
-
-@(private)
-console_schedule_dma_dmc_transfer :: proc(console: ^Console) {
-	if console.dma_dmc_scheduled || console.dma_dmc_transfer {
-		log.warn("sheduled DMA DMC transfer while ongoing")
-	}
-	console.dma_dmc_scheduled = true
-	console.dma_dmc_transfer = false
-
-	if is_apu_clk1(console^) {
-		console.dma_dmc_schedule_count = 3
-	}
-
-	if is_apu_clk2(console^) {
-		console.dma_dmc_schedule_count = 4
-	}
-
-	if console.apu.dmc.dma_transfer_mode == .Reload {
-		console.dma_dmc_schedule_count += 1
-	}
 }
 
 console_reset :: proc(console: ^Console) -> Maybe(Error) {
@@ -385,7 +185,9 @@ console_write_to_address :: proc(
 	case 0x4000 ..< 0x4014, 0x4015, 0x4017:
 		apu_write_to_address(&console.apu, data, address)
 	case 0x4014:
-		console_schedule_dma_oam_transfer(console, data)
+		dma_query_oam_state_complete(&console.dma)
+		dma_schedule_oam_transfer(&console.dma, data)
+	// dma_schedule_oam_transfer(console, data)
 	case 0x04016:
 		controller_write(&console.controller1, data)
 		controller_write(&console.controller2, data)

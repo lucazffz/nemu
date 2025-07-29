@@ -227,13 +227,7 @@ apu_get_sample :: proc(apu: ^APU) -> (sample: f64) {
 
 }
 
-apu_execute_clk_cycle :: proc(
-	apu: ^APU,
-) -> (
-	sample_complete: bool,
-	trigger_irq: bool,
-	dma_transfer: bool,
-) {
+apu_execute_clk_cycle :: proc(apu: ^APU, dma: ^DMA) -> (sample_complete: bool, trigger_irq: bool) {
 	apu.audio_time += apu.audio_time_per_apu_clk
 	if apu.audio_time >= apu.audio_time_per_system_sample {
 		apu.audio_time -= apu.audio_time_per_system_sample
@@ -246,23 +240,25 @@ apu_execute_clk_cycle :: proc(
 		if apu.frame_interrupt do trigger_irq = true
 	}
 
-	dma_transfer = delta_modulation_channel_clock(&apu.dmc)
+	pulse_channel_console_clk(&apu.pulse1)
+	pulse_channel_console_clk(&apu.pulse2)
+	delta_modulation_channel_console_clk(&apu.dmc, dma)
 
 
 	// update once per CPU clock cycle
 	if apu.cycle_count % 3 == 0 {
-		triangle_channel_cpu_clock(&apu.triangle)
+		triangle_channel_cpu_clk(&apu.triangle)
 	}
 
 	// update once per frame (cpu_cycle / 2 <=> ppu_cycle / 6)
 	if apu.cycle_count % 6 == 0 {
 		frame, half_frame, quater_frame := execute_frame_sequence(apu)
 
-		pulse_channel_apu_clock(&apu.pulse1, quater_frame, half_frame)
-		pulse_channel_apu_clock(&apu.pulse2, quater_frame, half_frame)
-		noise_channel_apu_clock(&apu.noise, quater_frame, half_frame)
-		triangle_channel_apu_clock(&apu.triangle, quater_frame, half_frame)
-		delta_modulation_channel_apu_clock(&apu.dmc, quater_frame, half_frame)
+		pulse_channel_apu_clk(&apu.pulse1, quater_frame, half_frame)
+		pulse_channel_apu_clk(&apu.pulse2, quater_frame, half_frame)
+		noise_channel_apu_clk(&apu.noise, quater_frame, half_frame)
+		triangle_channel_apu_clk(&apu.triangle, quater_frame, half_frame)
+		delta_modulation_channel_apu_clk(&apu.dmc, quater_frame, half_frame)
 
 		pulse1_sample := get_pulse_channel_output(apu.pulse1)
 		pulse2_sample := get_pulse_channel_output(apu.pulse2)
@@ -480,22 +476,44 @@ get_delta_modulation_channel_output :: proc(d: DMC) -> u8 {
 
 
 @(private = "file")
-delta_modulation_channel_clock :: proc(d: ^DMC) -> (dma_transfer: bool) {
+delta_modulation_channel_console_clk :: proc(d: ^DMC, dma: ^DMA) {
 	if !d.enable {
 		d.sample_length = 0
 	}
 
 	if d.sample_buffer_empty && d.reader_current_length > 0 {
-		dma_transfer = true
+		// sample_buffer will be filled by dma transfer
+		dma_schedule_dmc_transfer(dma)
+	}
+
+	if dma_query_dmc_state_complete(dma) {
+		d.reader_current_addr += 1
+		if d.reader_current_addr == 0 do d.reader_current_addr = 0x8000
+
+		if d.reader_current_length > 0 {
+			d.reader_current_length -= 1
+		}
+
+		if d.enable && d.reader_current_length == 0 {
+			if d.ctrl_reg.loop {
+				// restart
+				// d.dma_transfer_mode = .Load
+				d.reader_current_addr = d.sample_address
+				d.reader_current_length = d.sample_length
+			} else {
+				if d.ctrl_reg.irq_enable {
+					d.interrupt = true
+				}
+			}
+		}
 	}
 
 	return
 }
 
 @(private = "file")
-delta_modulation_channel_apu_clock :: proc(d: ^DMC, quater_frame, half_frame: bool) // dma_transfer: bool,
+delta_modulation_channel_apu_clk :: proc(d: ^DMC, quater_frame, half_frame: bool) // dma_transfer: bool,
 {
-
 	if d.timer_value > 0 {
 		d.timer_value -= 1
 	} else {
@@ -566,7 +584,7 @@ get_noise_channel_output :: proc(n: Noise_Channel) -> u8 {
 }
 
 @(private = "file")
-noise_channel_apu_clock :: proc(n: ^Noise_Channel, quater_frame, half_frame: bool) {
+noise_channel_apu_clk :: proc(n: ^Noise_Channel, quater_frame, half_frame: bool) {
 	if quater_frame {
 		update_envelope: {
 			// Both the envelope and sweep use an identical divider circuit to
@@ -631,7 +649,7 @@ get_triangle_channel_output :: proc(t: Triangle_Channel) -> u8 {
 }
 
 @(private = "file")
-triangle_channel_cpu_clock :: proc(t: ^Triangle_Channel) {
+triangle_channel_cpu_clk :: proc(t: ^Triangle_Channel) {
 	update_timer: if t.timer_value > 0 {
 		t.timer_value -= 1
 	} else {
@@ -660,7 +678,7 @@ triangle_channel_cpu_clock :: proc(t: ^Triangle_Channel) {
 }
 
 @(private = "file")
-triangle_channel_apu_clock :: proc(t: ^Triangle_Channel, quater_frame, half_frame: bool) {
+triangle_channel_apu_clk :: proc(t: ^Triangle_Channel, quater_frame, half_frame: bool) {
 	if quater_frame {
 		// update linear counter
 		if !t.linear_counter_reset {
@@ -718,7 +736,7 @@ get_pulse_channel_output :: proc(p: Pulse_Channel) -> u8 {
 }
 
 @(private = "file")
-pulse_channel_apu_clock :: proc(p: ^Pulse_Channel, quater_frame, half_frame: bool) {
+pulse_channel_console_clk :: proc(p: ^Pulse_Channel) {
 	update_sweep_target_period: {
 		// The sweep target period is continuously updated (combinatorial
 		// hardare circuit in NES) and will affect the wave amplitude. Only
@@ -731,7 +749,11 @@ pulse_channel_apu_clock :: proc(p: ^Pulse_Channel, quater_frame, half_frame: boo
 			p.sweep_target_period = p.timer_period + current_period
 		}
 	}
+}
 
+
+@(private = "file")
+pulse_channel_apu_clk :: proc(p: ^Pulse_Channel, quater_frame, half_frame: bool) {
 	if quater_frame {
 		update_envelope: {
 			// Both the envelope and sweep use an identical divider circuit to
