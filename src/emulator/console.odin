@@ -120,7 +120,7 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 		mixing_stratergy = APU_Mixing_Linear_Approximation{0, 0, 0, 0, 1},
 	}
 
-	apu_initialize(&c.apu, 44100)
+	apu_initialize(&c.apu, 44100, apu_opts)
 
 	console^ = c
 	g_console = console
@@ -313,11 +313,13 @@ console_execute_clk_cycle :: proc(
 // @note clk1 is assumed to be even cpu clock cycles and clk2 uneven.
 // This is not technically correct since the NES CPU and APU can
 // power into either of 2 alginments relative to each other. However,
-// this emulator have start at 0.
+// this emulator have both start at 0.
+@(private)
 is_apu_clk1 :: proc(c: Console) -> bool {
 	return c.cycle_count & 0x1 == 0
 }
 
+@(private)
 is_apu_clk2 :: proc(c: Console) -> bool {
 	return c.cycle_count & 0x1 == 1
 }
@@ -435,7 +437,6 @@ console_read_from_address :: proc(
 	}
 
 	return
-
 }
 
 @(require_results)

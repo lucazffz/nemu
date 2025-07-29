@@ -172,7 +172,6 @@ cartridge_delete :: proc(
 	return .None
 }
 
-
 @(require_results)
 cartridge_read_from_address :: proc(
 	cartridge: ^Cartridge,

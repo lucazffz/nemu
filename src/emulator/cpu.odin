@@ -199,25 +199,37 @@ cycle_pattern_int_to_enum :: proc(pattern: []int) -> []Cycle_Type {
 	return transmute([]Cycle_Type)pattern
 }
 
+// number of cycles executed on current instruction or interrupt
 @(require_results)
-cpu_get_last_executed_cycle_type :: proc(cpu: CPU) -> Cycle_Type {
+cpu_get_last_executed_cycle_offset :: proc(cpu: CPU) -> int {
 	cycle_count: int
-	cycle_pattern: []Cycle_Type
 	switch v in cpu.current {
 	case Interrupt:
 		cycle_count = INTERRUPT_CYCLE_COUNT
-		cycle_pattern = cycle_pattern_int_to_enum(interrupt_cycle_pattern)
 	case Instruction:
 		cycle_count = v.cycle_count
-		cycle_pattern = v.cycle_pattern
 		if cpu.page_crossed {
 			cycle_count += v.page_boundary_extra_cycles
 		}
 	}
 
-	index := cycle_count - (cpu.stall_count + 1)
+	return cycle_count - (cpu.stall_count + 1)
+}
+
+@(require_results)
+cpu_get_last_executed_cycle_type :: proc(cpu: CPU) -> Cycle_Type {
+	cycle_pattern: []Cycle_Type
+	switch v in cpu.current {
+	case Interrupt:
+		cycle_pattern = cycle_pattern_int_to_enum(interrupt_cycle_pattern)
+	case Instruction:
+		cycle_pattern = v.cycle_pattern
+	}
+
+	index := #force_inline cpu_get_last_executed_cycle_offset(cpu)
 
 	// Extra page boundary cycles are always one extra read cycle.
+	// These are not included in the cycle pattern tables.
 	if index == len(cycle_pattern) {
 		return .Read
 	}
