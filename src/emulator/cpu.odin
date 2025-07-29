@@ -7,28 +7,27 @@ import "core:fmt"
 // For documentation regarding the CPU, please refer to:
 // https://www.cpcwiki.eu/index.php/MOS_6505
 CPU :: struct {
-	x:                   u8,
-	y:                   u8,
-	acc:                 u8,
-	status:              bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
-	interrupt:           enum {
-		None,
-		Reset,
-		NMI,
-		IRQ,
-	},
+	x:                 u8,
+	y:                 u8,
+	acc:               u8,
+	status:            bit_set[Processor_Status_Flags], // Defaults to u8 for underlying type
+	interrupt:         Interrupt,
 	// stack is located in page 1 ($0100-$01FF), sp is offset to this base
-	sp:                  u8,
-	pc:                  u16,
-	cycle_count:         int,
-	stall_count:         int,
-	instruction_count:   int,
-	decmial_mode:        bool,
-	// will be nil if an interrupt is being handled
-	current_instruction: Maybe(Instruction),
+	sp:                u8,
+	pc:                u16,
+	cycle_count:       int,
+	stall_count:       int,
+	instruction_count: int,
+	page_crossed:      bool,
+	current:           union {
+		Interrupt,
+		Instruction,
+	},
 }
 
 PAGE_1_BASE_ADDRESS :: 0x0100
+
+INTERRUPT_CYCLE_COUNT :: 7
 
 // NF - Negative Flag         : 1 when result is negative
 // VF - Overflow Flag         : 1 on signed overflow
@@ -158,10 +157,23 @@ Instruction_Category :: enum {
 	Ilegal,
 }
 
+Cycle_Type :: enum int {
+	Write,
+	Read,
+}
+
+Interrupt :: enum {
+	None,
+	Reset,
+	NMI,
+	IRQ,
+}
+
 Instruction :: struct {
 	type:                       Instruction_Type,
 	addressing_mode:            Instruction_Addressing_Mode,
 	byte_size:                  int,
+	cycle_pattern:              []Cycle_Type,
 	cycle_count:                int,
 	page_boundary_extra_cycles: int,
 	category:                   Instruction_Category,
@@ -169,15 +181,50 @@ Instruction :: struct {
 
 
 @(require_results)
-get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
+cpu_get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 	return {
 		type = Instruction_Type(instruction_type[opcode]),
 		addressing_mode = Instruction_Addressing_Mode(instruction_addressing_mode[opcode]),
 		byte_size = instruction_byte_size[opcode],
+		cycle_pattern = cycle_pattern_int_to_enum(instruction_cycle_pattern[opcode]),
 		cycle_count = instruction_cycle_count[opcode],
 		page_boundary_extra_cycles = instruction_page_boundary_extra_cycles[opcode],
 		category = Instruction_Category(instruction_category[opcode]),
 	}
+}
+
+@(require_results, private = "file")
+cycle_pattern_int_to_enum :: proc(pattern: []int) -> []Cycle_Type {
+	// Okay since the backing type of the Cycle_Type enum is set to int.
+	return transmute([]Cycle_Type)pattern
+}
+
+@(require_results)
+cpu_get_last_executed_cycle_type :: proc(cpu: CPU) -> Cycle_Type {
+	cycle_count: int
+	cycle_pattern: []Cycle_Type
+	switch v in cpu.current {
+	case Interrupt:
+		cycle_count = INTERRUPT_CYCLE_COUNT
+		cycle_pattern = cycle_pattern_int_to_enum(interrupt_cycle_pattern)
+	case Instruction:
+		cycle_count = v.cycle_count
+		cycle_pattern = v.cycle_pattern
+		if cpu.page_crossed {
+			cycle_count += v.page_boundary_extra_cycles
+		}
+	}
+
+	index := cycle_count - (cpu.stall_count + 1)
+
+	// Extra page boundary cycles are always one extra read cycle.
+	if index == len(cycle_pattern) {
+		return .Read
+	}
+
+	// @todo add assert to ensure within range
+	cycle_type := cycle_pattern[index]
+	return cycle_type
 }
 
 /*
@@ -218,8 +265,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			severity = .Fatal,
 		)
 	} else {
-		instr := get_instruction_from_opcode(opcode)
-		console.cpu.current_instruction = nil
+		instr := cpu_get_instruction_from_opcode(opcode)
 
 		// handle_interrupt and execute_instruction are mutually exclusive
 		// meaning both will never be executed in the same procedure call
@@ -253,10 +299,10 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 		// instruction to be executed
 		// interrupt priority from higest to lowest: reset, BRK, NMI, IRQ
 		// @todo handle interrupt hijacking
-		INTERRUPT_CYCLE_COUNT :: 7
 
 		defer {
 			console.cpu.stall_count = INTERRUPT_CYCLE_COUNT - 1
+			console.cpu.current = console.cpu.interrupt
 			console.cpu.interrupt = .None
 		}
 
@@ -312,11 +358,12 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 
 		defer {
 			cycles := instr.cycle_count
+			console.cpu.page_crossed = page_crossed
 			if page_crossed {
 				cycles += instr.page_boundary_extra_cycles
 			}
 
-			console.cpu.current_instruction = instr
+			console.cpu.current = instr
 			console.cpu.instruction_count += 1
 			console.cpu.stall_count = cycles - 1
 

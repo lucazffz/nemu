@@ -14,28 +14,29 @@ ASSETS_DIR_PATH :: #directory + "assets/"
 CPU_CLK_FREQUENCY :: 1789773.0
 
 Console :: struct {
-	cpu:                             CPU,
-	ppu:                             PPU,
-	apu:                             APU,
+	cpu:                     CPU,
+	ppu:                     PPU,
+	apu:                     APU,
 	// 2 KB of internal ram ($0000 - $07FF)
-	ram:                             []u8,
-	palette:                         ^Palette,
-	cartridge:                       ^Cartridge,
-	controller1:                     Controller,
-	controller2:                     Controller,
-	cycle_count:                     int,
+	ram:                     []u8,
+	palette:                 ^Palette,
+	cartridge:               ^Cartridge,
+	controller1:             Controller,
+	controller2:             Controller,
+	cycle_count:             int,
 	// DMA shit
-	dma_halt_cycle:                  bool,
-	dma_oam_page:                    u8,
-	dma_oam_addr:                    u8,
-	dma_oam_data:                    u8,
-	dma_oam_alignment_cycle:         bool, // DMA halt/alignment cycle
-	dma_oam_transfer:                bool,
-	dma_dmc_transfer:                bool,
-	dma_dmc_transfer_schedule_count: int,
-	dma_dmc_transfer_scheduled:      bool,
-	dma_dmc_dummy_cycle:             bool,
-	dma_dmc_alignment_cycle:         bool,
+	dma_halt_cycle:          bool,
+	dma_oam_page:            u8,
+	dma_oam_addr:            u8,
+	dma_oam_data:            u8,
+	dma_oam_alignment_cycle: bool, // DMA halt/alignment cycle
+	dma_oam_transfer:        bool,
+	dma_oam_scheduled:       bool,
+	dma_dmc_transfer:        bool,
+	dma_dmc_schedule_count:  int,
+	dma_dmc_scheduled:       bool,
+	dma_dmc_dummy_cycle:     bool,
+	dma_dmc_alignment_cycle: bool,
 }
 
 CPU_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1fff, .Closed} // 2KB ram mirrored 4 times
@@ -146,7 +147,7 @@ console_execute_clk_cycle :: proc(
 
 	audio_sample_complete, trigger_irq, dmc_dma_transfer = apu_execute_clk_cycle(&console.apu)
 
-	if !console.dma_dmc_transfer_scheduled && !console.dma_dmc_transfer {
+	if !console.dma_dmc_scheduled && !console.dma_dmc_transfer {
 		if dmc_dma_transfer do console_schedule_dma_dmc_transfer(console)
 	}
 
@@ -167,7 +168,7 @@ console_execute_clk_cycle :: proc(
 	console.cycle_count += 1
 	return
 
-	should_execute_dma_transfer :: proc(c: ^Console) -> bool {
+	should_execute_dma_transfer :: proc(c: ^Console) -> (should: bool) {
 		if c.dma_oam_transfer {
 			return true
 		}
@@ -176,16 +177,27 @@ console_execute_clk_cycle :: proc(
 			return true
 		}
 
-		if c.dma_dmc_transfer_scheduled {
-			c.dma_dmc_transfer_schedule_count -= 1
-			if c.dma_dmc_transfer_schedule_count == 0 {
-				c.dma_dmc_transfer_scheduled = false
-				c.dma_dmc_transfer = true
-				return true
+		if c.dma_oam_scheduled {
+			if cpu_get_last_executed_cycle_type(c.cpu) == .Read {
+				c.dma_oam_transfer = true
+				c.dma_oam_scheduled = false
+				should = true
+
 			}
 		}
 
-		return false
+		if c.dma_dmc_scheduled {
+			c.dma_dmc_schedule_count -= 1
+			if c.dma_dmc_schedule_count <= 0 {
+				if cpu_get_last_executed_cycle_type(c.cpu) == .Read {
+					c.dma_dmc_scheduled = false
+					c.dma_dmc_transfer = true
+					should = true
+				}
+			}
+		}
+
+		return
 	}
 
 	dma_transfer_execute_clk_cycle :: proc(c: ^Console) {
@@ -312,29 +324,30 @@ is_apu_clk2 :: proc(c: Console) -> bool {
 
 @(private)
 console_schedule_dma_oam_transfer :: proc(console: ^Console, page: u8) {
-	console.dma_oam_transfer = true
+	console.dma_oam_scheduled = true
+	console.dma_oam_transfer = false
 	console.dma_oam_addr = 0
 	console.dma_oam_page = page
 }
 
 @(private)
 console_schedule_dma_dmc_transfer :: proc(console: ^Console) {
-	if console.dma_dmc_transfer_scheduled || console.dma_dmc_transfer {
+	if console.dma_dmc_scheduled || console.dma_dmc_transfer {
 		log.warn("sheduled DMA DMC transfer while ongoing")
 	}
-	console.dma_dmc_transfer_scheduled = true
+	console.dma_dmc_scheduled = true
 	console.dma_dmc_transfer = false
 
 	if is_apu_clk1(console^) {
-		console.dma_dmc_transfer_schedule_count = 3
+		console.dma_dmc_schedule_count = 3
 	}
 
 	if is_apu_clk2(console^) {
-		console.dma_dmc_transfer_schedule_count = 4
+		console.dma_dmc_schedule_count = 4
 	}
 
 	if console.apu.dmc.dma_transfer_mode == .Reload {
-		console.dma_dmc_transfer_schedule_count += 1
+		console.dma_dmc_schedule_count += 1
 	}
 }
 
@@ -428,7 +441,7 @@ console_read_from_address :: proc(
 @(require_results)
 console_state_to_string :: proc(console: ^Console) -> string {
 	opcode, _ := console_read_from_address(console, console.cpu.pc)
-	instruction := get_instruction_from_opcode(opcode)
+	instruction := cpu_get_instruction_from_opcode(opcode)
 	cpu := console.cpu
 
 	num_of_operands := instruction.byte_size - 1
