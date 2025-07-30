@@ -105,7 +105,7 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 	c.cartridge = cartridge
 
 	apu_opts: APU_Options = {
-		mixing_stratergy = APU_Mixing_Linear_Approximation{1, 1, 0, 0, 0},
+		mixing_stratergy = APU_Mixing_Linear_Approximation{1, 1, 1, 1, 1},
 	}
 
 	dma_initialize(&c.dma)
