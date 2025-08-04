@@ -180,11 +180,12 @@ Instruction :: struct {
 }
 
 
+// Restore state as after power up.
 cpu_initialize :: proc(cpu: ^CPU) {
 	c := CPU{}
 
 	c.sp = 0xfd
-	c.pc = 0xc000
+	c.pc = 0xfffc
 	c.status = {.IF}
 
 	cpu^ = c

@@ -4,29 +4,10 @@ import "base:runtime"
 import "core:fmt"
 import "core:slice"
 
-// RGBA8 format
-Color :: distinct [4]u8
+COLOR_BLACK :: Color{0, 0, 0, 255}
 
-Loopy_Register :: bit_field u16 {
-	coarse_x:    u16 | 5,
-	coarse_y:    u16 | 5,
-	nametable_x: u16 | 1,
-	nametable_y: u16 | 1,
-	fine_y:      u16 | 3,
-	_unused:     u16 | 1,
-}
-
-Sprite :: struct {
-	y_pos:      u8,
-	tile_index: u8,
-	attributes: bit_field u8 {
-		palette_index:     uint | 2,
-		_unused:           u8   | 3,
-		priority:          u8   | 1, // 0: in front of background, 1: behind background
-		flip_horizontally: bool | 1,
-		flip_vertically:   bool | 1,
-	},
-	x_pos:      u8,
+ppu_default_opts := PPU_Options {
+	left_margin_color = COLOR_BLACK,
 }
 
 PPU :: struct {
@@ -93,6 +74,7 @@ PPU :: struct {
 	palette:                    []u8,
 	is_rendering:               bool, // active during scanlines -1 - 239
 	// frame_complete:         bool,
+	opts:                       PPU_Options,
 	frame_count:                u64,
 	cycle:                      int,
 	scanline:                   int,
@@ -119,6 +101,46 @@ PPU :: struct {
 	sprite_zero_being_rendered: bool,
 
 	// current_sprite:          Sprite,
+}
+
+// RGBA8 format
+Color :: distinct [4]u8
+
+Loopy_Register :: bit_field u16 {
+	coarse_x:    u16 | 5,
+	coarse_y:    u16 | 5,
+	nametable_x: u16 | 1,
+	nametable_y: u16 | 1,
+	fine_y:      u16 | 3,
+	_unused:     u16 | 1,
+}
+
+Sprite :: struct {
+	y_pos:      u8,
+	tile_index: u8,
+	attributes: bit_field u8 {
+		palette_index:     uint | 2,
+		_unused:           u8   | 3,
+		priority:          u8   | 1, // 0: in front of background, 1: behind background
+		flip_horizontally: bool | 1,
+		flip_vertically:   bool | 1,
+	},
+	x_pos:      u8,
+}
+
+PPU_Options :: struct {
+	left_margin_color: Color,
+}
+
+// Restore state as after power up.
+ppu_initialize :: proc(ppu: ^PPU, opts := ppu_default_opts) {
+	p := PPU{}
+
+	p.opts = opts
+
+	p.palette = ppu.palette
+
+	ppu^ = p
 }
 
 @(require_results)
@@ -730,24 +752,34 @@ ppu_execute_clk_cycle :: proc(
 		bg_palette = (bg_pal1 << 1) | bg_pal0
 	}
 
+
 	pixel, palette_idx: uint
+	pixel_source: enum {
+		Background,
+		Foreground,
+	}
 
 	if bg_pixel == 0 && fg_pixel == 0 {
 		pixel = 0x0
 		palette_idx = 0x0
+		pixel_source = .Background
 	} else if bg_pixel == 0 && fg_pixel > 0 {
 		pixel = fg_pixel
 		palette_idx = fg_palette
+		pixel_source = .Foreground
 	} else if bg_pixel > 0 && fg_pixel == 0 {
 		pixel = bg_pixel
 		palette_idx = bg_palette
+		pixel_source = .Background
 	} else if bg_pixel > 0 && bg_pixel > 0 {
 		if fg_priority == 0 {
 			pixel = fg_pixel
 			palette_idx = fg_palette
+			pixel_source = .Foreground
 		} else {
 			pixel = bg_pixel
 			palette_idx = bg_palette
+			pixel_source = .Background
 		}
 
 		if ppu.sprite_zero_hit_possible && ppu.sprite_zero_being_rendered {
@@ -765,9 +797,35 @@ ppu_execute_clk_cycle :: proc(
 		}
 	}
 
-	if buffer, ok := pixel_buffer.?; ok {
+	write_to_buffer: if buffer, ok := pixel_buffer.?; ok {
 		if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
-			c := ppu_get_color_from_palette(ppu, palette, palette_idx, pixel)
+			use_default_color: bool = false
+
+			if ppu.cycle < 8 {
+				if !ppu.mask.show_background_in_margin && pixel_source == .Background {
+					use_default_color = true
+				}
+
+				if !ppu.mask.show_sprites_in_margin && pixel_source == .Foreground {
+					use_default_color = true
+				}
+			}
+
+			if !ppu.mask.enable_background_rendering && pixel_source == .Background {
+				use_default_color = true
+			}
+
+			if !ppu.mask.enable_sprite_rendering && pixel_source == .Foreground {
+				use_default_color = true
+			}
+
+			c: Color
+			if use_default_color {
+				c = ppu.opts.left_margin_color
+			} else {
+				c = ppu_get_color_from_palette(ppu, palette, palette_idx, pixel)
+			}
+
 			buffer[ppu.scanline * 256 + ppu.cycle] = c
 		}
 	}

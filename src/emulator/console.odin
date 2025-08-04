@@ -71,26 +71,26 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 	console.cpu.pc = address
 }
 
-// will touch all fields so can be used to reinitialize an existing console
+// Restore state as after power up.
 console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartridge) {
-	c: Console
-
-	// reassign pointers
-	c.ram = console.ram
-	c.ppu.palette = console.ppu.palette
-	c.palette = console.palette
-
-	c.cartridge = cartridge
-
 	apu_opts: APU_Options = {
 		mixing_stratergy = APU_Mixing_Linear_Approximation{1, 1, 1, 1, 1},
 	}
 
-	cpu_initialize(&c.cpu)
-	dma_initialize(&c.dma)
-	apu_initialize(&c.apu, 44100, apu_opts)
+	cpu_initialize(&console.cpu)
+	dma_initialize(&console.dma)
+	apu_initialize(&console.apu, 44100, apu_opts)
+	ppu_initialize(&console.ppu)
 
-	console^ = c
+	// c: Console
+
+	// reassign pointers
+	// c.ram = console.ram
+	// c.palette = console.palette
+
+	console.cartridge = cartridge
+
+	// console^ = c
 }
 
 

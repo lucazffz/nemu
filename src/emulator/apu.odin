@@ -3,7 +3,6 @@ package emulator
 import "base:runtime"
 import "core:math"
 
-@(private = "file")
 apu_default_opts := APU_Options {
 	mixing_stratergy = APU_Mixing_Linear_Approximation{1, 1, 1, 1, 1},
 }
@@ -193,6 +192,7 @@ apu_set_options :: proc(apu: ^APU, opts: APU_Options) {
 	}
 }
 
+// Restore state as after power up.
 apu_initialize :: proc(apu: ^APU, #any_int sample_rate: uint, opts := apu_default_opts) {
 	a := APU{}
 
@@ -211,7 +211,6 @@ apu_initialize :: proc(apu: ^APU, #any_int sample_rate: uint, opts := apu_defaul
 	a.frame_reg.irq_inhibit_flag = true
 
 	a.noise.feedback_shifter_value = 1
-
 
 	apu^ = a
 }
