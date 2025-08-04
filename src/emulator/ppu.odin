@@ -621,7 +621,7 @@ ppu_execute_clk_cycle :: proc(
 							sprite_pattern_addr_lo =
 								(u16(sprite.tile_index & 0x01) << 12) |
 								((u16(sprite.tile_index & 0xfe) + 1) << 4) |
-								(u16(7 - ppu.scanline - int(sprite.y_pos) & 0x07))
+								(u16(7 - (ppu.scanline - int(sprite.y_pos))) & 0x07)
 						}
 					}
 				}

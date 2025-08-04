@@ -2,13 +2,15 @@ package emulator
 
 Mapper3 :: struct {
 	using m:     Mapper,
+	mirroring:   Nametable_Mirroring,
 	bank_select: u8,
 }
 
-mapper3_make :: proc() -> ^Mapper3 {
+mapper3_make :: proc(nametable_arrangment: Nametable_Arrangement) -> ^Mapper3 {
 	m := new(Mapper3)
 
-	m.write_to_address = mapper3_write_to_address
+	m.mirroring = nametable_arrangement_to_mirroring(nametable_arrangment)
+	m.m.write_to_address = mapper3_write_to_address
 	m.read_from_address = mapper3_read_from_address
 	m.verify_ines_integrity = mapper3_verify_ines_integrity
 	m.delete = mapper3_delete
@@ -51,7 +53,7 @@ mapper3_write_to_address :: proc(
 			severity = .Warning,
 		)
 	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		c.vram[addr - 0x2000] = data
 	case 0x6000 ..< 0x8000:
 		// While Mapper 3 does not support PRG RAM, Hayauchi Super Igo uses
@@ -92,7 +94,7 @@ mapper3_read_from_address :: proc(
 		offset := uint(bank_number) * 0x2000 + bank_offset
 		data = c.chr_rom[offset]
 	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		data = c.vram[addr - 0x2000]
 	case 0x6000 ..< 0x8000:
 		// While Mapper 3 does not support PRG RAM, Hayauchi Super Igo uses

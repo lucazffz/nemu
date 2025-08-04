@@ -23,12 +23,14 @@ Mapper1 :: struct {
 	chr_bank_0_register: u8,
 	chr_bank_1_register: u8,
 	prg_bank_register:   u8,
+	mirroring:           Nametable_Mirroring,
 }
 
-mapper1_make :: proc() -> ^Mapper1 {
+mapper1_make :: proc(nametable_arrangement: Nametable_Arrangement) -> ^Mapper1 {
 	m := new(Mapper1)
 	reset(m)
 
+	m.mirroring = nametable_arrangement_to_mirroring(nametable_arrangement)
 	m.write_to_address = mapper1_write_to_address
 	m.read_from_address = mapper1_read_from_address
 	m.verify_ines_integrity = mapper1_verify_ines_integrity
@@ -71,7 +73,7 @@ mapper1_write_to_address :: proc(
 			)
 		}
 	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		c.vram[addr - 0x2000] = data
 	case 0x6000 ..< 0x8000:
 		if c.prg_ram != nil {
@@ -110,7 +112,7 @@ mapper1_read_from_address :: proc(
 		mem := cartridge_get_chr_mem(c)
 		data = mem[offset]
 	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		data = c.vram[addr - 0x2000]
 	case 0x6000 ..< 0x8000:
 		if c.prg_ram != nil {
@@ -155,13 +157,13 @@ write_to_load_register :: proc(m: ^Mapper1, c: ^Cartridge, data: u8, address: u1
 				// arrangement in mapper 1 control register
 				switch m.control.nametable_arrangement {
 				case 0:
-					c.mirroring = .Single_Screen_A
+					m.mirroring = .Single_Screen_A
 				case 1:
-					c.mirroring = .Single_Screen_B
+					m.mirroring = .Single_Screen_B
 				case 2:
-					c.mirroring = .Vertical
+					m.mirroring = .Vertical
 				case 3:
-					c.mirroring = .Horizontal
+					m.mirroring = .Horizontal
 				}
 			case 1:
 				m.chr_bank_0_register = m.load_register & 0x1f

@@ -26,6 +26,7 @@ Mapper4 :: struct {
 	},
 	irq_latch_reg:       u8,
 	// ---- Internal variables
+	mirroring:           Nametable_Mirroring,
 	a12_high:            bool,
 	// a12_low_counter:     uint,
 	interrupt_enable:    bool,
@@ -34,9 +35,10 @@ Mapper4 :: struct {
 	bank_select_regs:    [8]u8, // R0-R7
 }
 
-mapper4_make :: proc() -> ^Mapper4 {
+mapper4_make :: proc(nametable_arrangment: Nametable_Arrangement) -> ^Mapper4 {
 	m := new(Mapper4)
 
+	m.mirroring = nametable_arrangement_to_mirroring(nametable_arrangment)
 	m.write_to_address = mapper4_write_to_address
 	m.read_from_address = mapper4_read_from_address
 	m.verify_ines_integrity = mapper4_verify_ines_integrity
@@ -90,7 +92,7 @@ mapper4_write_to_address :: proc(
 			c.trigger_irq = update_interrupt(m, address)
 		}
 	case 0x2000 ..< 0x3f00:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		c.vram[addr - 0x2000] = data
 	case 0x6000 ..< 0x8000:
 		if c.prg_ram == nil {
@@ -160,7 +162,7 @@ mapper4_read_from_address :: proc(
 			c.trigger_irq = update_interrupt(m, address)
 		}
 	case 0x2000 ..< 0x3f00:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		data = c.vram[addr - 0x2000]
 	case 0x6000 ..< 0x8000:
 		if c.prg_ram == nil {
@@ -222,10 +224,13 @@ write_to_register_from_address :: proc(m: ^Mapper4, c: ^Cartridge, address: u16,
 		}
 	case 0xa000 ..< 0xc000:
 		if is_address_even {
-			if data & 0x01 == 0 {
-				c.mirroring = .Vertical
-			} else {
-				c.mirroring = .Horizontal
+			// Has no effect if cartridge is hardwired with 4-screen.
+			if m.mirroring != .Four_Screen {
+				if data & 0x01 == 0 {
+					m.mirroring = .Vertical
+				} else {
+					m.mirroring = .Horizontal
+				}
 			}
 		} else {
 			m.prg_ram_protect_reg = auto_cast data
@@ -334,39 +339,34 @@ map_address_to_prg_mem_offset :: proc(
 	mapped_offset: uint,
 ) {
 	// All PRG ROM banks are 8KB in size.
+	prg_offset := uint(address & 0x1fff)
 	switch address {
 	case 0x8000 ..< 0xa000:
 		if m.bank_select_reg.prg_rom_bank_mode == 0 {
 			// switchable
 			bank_number := m.bank_select_regs[6]
-			prg_offset := uint(address & 0x1fff)
 			mapped_offset = uint(bank_number) * 0x2000 + prg_offset
 		} else {
 			// fixed to second-last bank
-			prg_offset := uint(address & 0x1fff)
 			second_last_bank_start_offset := prg_rom_size - 0x4000
 			mapped_offset = uint(second_last_bank_start_offset) + prg_offset
 		}
 	case 0xa000 ..< 0xc000:
 		// switchable 
 		bank_number := m.bank_select_regs[7]
-		prg_offset := uint(address & 0x1fff)
 		mapped_offset = uint(bank_number) * 0x2000 + prg_offset
 	case 0xc000 ..< 0xe000:
 		if m.bank_select_reg.prg_rom_bank_mode == 0 {
 			// fixed to second-last bank
-			prg_offset := uint(address & 0x1fff)
 			second_last_bank_start_offset := prg_rom_size - 0x4000
 			mapped_offset = uint(second_last_bank_start_offset) + prg_offset
 		} else {
 			// switchable
 			bank_number := m.bank_select_regs[6]
-			prg_offset := uint(address & 0x1fff)
 			mapped_offset = uint(bank_number) * 0x2000 + prg_offset
 		}
 	case 0xe000 ..= 0xffff:
 		// fixed to last bank
-		prg_offset := uint(address & 0x1fff)
 		last_bank_start_offset := prg_rom_size - 0x2000
 		mapped_offset = uint(last_bank_start_offset) + prg_offset
 	}

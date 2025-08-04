@@ -10,23 +10,49 @@ Mapper :: struct {
 }
 
 
-mapper_make_from_number :: proc(mapper_number: int) -> ^Mapper {
+mapper_make_from_number :: proc(
+	mapper_number: int,
+	nametable_arrangement: Nametable_Arrangement,
+) -> ^Mapper {
 	switch mapper_number {
 	case 0:
-		return &mapper0_make().m
+		return &mapper0_make(nametable_arrangement).m
 	case 1:
-		return &mapper1_make().m
+		return &mapper1_make(nametable_arrangement).m
 	case 2:
-		return &mapper2_make().m
+		return &mapper2_make(nametable_arrangement).m
 	case 3:
-		return &mapper3_make().m
+		return &mapper3_make(nametable_arrangement).m
 	case 4:
-		return &mapper4_make().m
+		return &mapper4_make(nametable_arrangement).m
 	case:
 		panic("mapper not supported")
 	}
 }
 
+@(require_results)
+nametable_arrangement_to_mirroring :: proc(
+	arrangement: Nametable_Arrangement,
+	alternative: Nametable_Mirroring = .Four_Screen,
+) -> (
+	mirroring: Nametable_Mirroring,
+) {
+	// Vertical nametable arrangement causes horizontal nametable
+	// mirroring and likwise horizontal nametable arrangement
+	// causes vertical nametable mirroring.
+	switch arrangement {
+	case .Vertical:
+		mirroring = .Horizontal
+	case .Horizontal:
+		mirroring = .Vertical
+	case .Alternative_Layout:
+		mirroring = alternative
+	}
+
+	return
+}
+
+@(require_results)
 get_nametable_mirror_address :: proc(address: u16, mirroring: Nametable_Mirroring) -> u16 {
 	addr := address & 0x3fff // keep lower 14 bits
 

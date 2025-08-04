@@ -2,12 +2,14 @@ package emulator
 
 Mapper2 :: struct {
 	using m:     Mapper,
+	mirroring:   Nametable_Mirroring,
 	bank_select: u8,
 }
 
-mapper2_make :: proc() -> ^Mapper2 {
+mapper2_make :: proc(nametable_arrangment: Nametable_Arrangement) -> ^Mapper2 {
 	m := new(Mapper2)
 
+	m.mirroring = nametable_arrangement_to_mirroring(nametable_arrangment)
 	m.write_to_address = mapper2_write_to_address
 	m.read_from_address = mapper2_read_from_address
 	m.verify_ines_integrity = mapper2_verify_ines_integrity
@@ -53,7 +55,7 @@ mapper2_write_to_address :: proc(
 			)
 		}
 	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		c.vram[addr - 0x2000] = data
 	case 0x6000 ..< 0x8000:
 		// While Mapper 2 does not support PRG RAM, some homebrew games
@@ -97,7 +99,7 @@ mapper2_read_from_address :: proc(
 		mem := cartridge_get_chr_mem(c)
 		data = mem[address]
 	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		data = c.vram[addr - 0x2000]
 	case 0x6000 ..< 0x8000:
 		// While Mapper 2 does not support PRG RAM, some homebrew games

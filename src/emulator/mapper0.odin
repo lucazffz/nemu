@@ -1,12 +1,15 @@
 package emulator
 
 Mapper0 :: struct {
-	using m: Mapper,
+	using m:   Mapper,
+	mirroring: Nametable_Mirroring,
 	// does not perform any banking
 }
 
-mapper0_make :: proc() -> ^Mapper0 {
+mapper0_make :: proc(nametable_arrangement: Nametable_Arrangement) -> ^Mapper0 {
 	m := new(Mapper0)
+
+	m.mirroring = nametable_arrangement_to_mirroring(nametable_arrangement)
 	m.write_to_address = mapper0_write_to_address
 	m.read_from_address = mapper0_read_from_address
 	m.verify_ines_integrity = mapper0_verify_ines_integrity
@@ -72,6 +75,7 @@ mapper0_write_to_address :: proc(
 ) -> (
 	err: Maybe(Error),
 ) {
+	m := cast(^Mapper0)mapper
 
 	switch address {
 	case 0x0000 ..< 0x2000:
@@ -83,7 +87,7 @@ mapper0_write_to_address :: proc(
 			severity = .Warning,
 		)
 	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		c.vram[addr - 0x2000] = data
 	case 0x6000 ..< 0x8000:
 		if len(c.prg_ram) != 0 {
@@ -117,11 +121,13 @@ mapper0_read_from_address :: proc(
 	data: u8,
 	err: Maybe(Error),
 ) {
+	m := cast(^Mapper0)mapper
+
 	switch address {
 	case 0x0000 ..< 0x2000:
 		data = c.chr_rom[address]
 	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
+		addr := get_nametable_mirror_address(address, m.mirroring)
 		data = c.vram[addr - 0x2000]
 	case 0x6000 ..< 0x8000:
 		if len(c.prg_ram) == 2 * KB {

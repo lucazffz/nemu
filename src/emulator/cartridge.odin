@@ -23,7 +23,7 @@ Cartridge :: struct {
 	// prg_nvram:        []u8,
 	// chr_nvram:        []u8,
 	battery_present:  bool,
-	mirroring:        Nametable_Mirroring,
+	// mirroring:        Nametable_Mirroring,
 	trigger_irq:      bool,
 }
 
@@ -60,24 +60,6 @@ cartridge_persistant_ram_present :: proc(cartridge: Cartridge) -> bool {
 	return cartridge.battery_present && cartridge.prg_ram != nil
 }
 
-@(require_results)
-cartridge_nametable_arrangement_to_mirroring :: proc(
-	arrangement: Nametable_Arrangement,
-) -> (
-	mirroring: Nametable_Mirroring,
-) {
-	// Vertical nametable arrangement causes horizontal nametable
-	// mirroring and likwise horizontal nametable arrangement
-	// causes vertical nametable mirroring.
-	switch arrangement {
-	case .Vertical:
-		mirroring = .Horizontal
-	case .Horizontal:
-		mirroring = .Vertical
-	}
-
-	return
-}
 
 @(require_results)
 cartridge_make_from_filename :: proc(
@@ -123,7 +105,6 @@ cartridge_make_from_ines :: proc(
 	c.vram = make_slice([]u8, 2 * KB, allocator, loc) or_return
 	c.mapper_number = ines.header.mapper_number
 	c.submapper_number = ines.header.submapper_number
-	c.mirroring = cartridge_nametable_arrangement_to_mirroring(ines.header.nametable_arrangement)
 	c.battery_present = ines.header.battery_present
 	c.ines_info = ines_get_info(ines)
 
@@ -133,7 +114,7 @@ cartridge_make_from_ines :: proc(
 	copy_slice(c.prg_rom, ines.prg_rom)
 	copy_slice(c.chr_rom, ines.chr_rom)
 
-	c.mapper = mapper_make_from_number(c.mapper_number)
+	c.mapper = mapper_make_from_number(c.mapper_number, ines.header.nametable_arrangement)
 
 	return
 
