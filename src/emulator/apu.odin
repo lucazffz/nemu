@@ -137,7 +137,7 @@ DMC :: struct {
 }
 
 APU_Options :: struct {
-	mixing_stratergy: union {
+	mixing_stratergy: union #no_nil {
 		APU_Mixing_Lookup_Table,
 		APU_Mixing_Linear_Approximation,
 	},
@@ -161,7 +161,6 @@ apu_make :: proc(
 	apu: APU,
 	err: runtime.Allocator_Error,
 ) {
-
 	apu.sample_buf = make_dynamic_array([dynamic]f64, allocator, loc) or_return
 	return
 }
@@ -217,11 +216,10 @@ apu_initialize :: proc(apu: ^APU, #any_int sample_rate: uint, opts := apu_defaul
 	apu^ = a
 }
 
-apu_get_sample :: proc(apu: ^APU) -> (sample: f64) {
+apu_query_sample :: proc(apu: ^APU) -> (sample: f64) {
 	sample = math.sum(apu.sample_buf[:]) / f64(len(apu.sample_buf))
 	clear_dynamic_array(&apu.sample_buf)
 	return
-
 }
 
 apu_execute_clk_cycle :: proc(apu: ^APU, dma: ^DMA) -> (sample_complete: bool, trigger_irq: bool) {
@@ -247,7 +245,7 @@ apu_execute_clk_cycle :: proc(apu: ^APU, dma: ^DMA) -> (sample_complete: bool, t
 		triangle_channel_cpu_clk(&apu.triangle)
 	}
 
-	// update once per frame (cpu_cycle / 2 <=> ppu_cycle / 6)
+	// update once per apu cycle (cpu_cycle / 2 <=> ppu_cycle / 6)
 	if apu.cycle_count % 6 == 0 {
 		_, half_frame, quater_frame := execute_frame_sequence(apu)
 
@@ -546,14 +544,7 @@ delta_modulation_channel_apu_clk :: proc(d: ^DMC, quater_frame, half_frame: bool
 			}
 		}
 	}
-
-
-	// return
 }
-
-// apu_is_dmc_sample_buffer_empty :: proc(apu: APU) -> bool {
-// 	return apu.dmc.sample_buffer_empty
-// }
 
 @(private = "file")
 get_noise_channel_output :: proc(n: Noise_Channel) -> u8 {

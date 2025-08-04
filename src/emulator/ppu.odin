@@ -1,5 +1,6 @@
 package emulator
 
+import "base:runtime"
 import "core:fmt"
 import "core:slice"
 
@@ -118,6 +119,30 @@ PPU :: struct {
 	sprite_zero_being_rendered: bool,
 
 	// current_sprite:          Sprite,
+}
+
+@(require_results)
+ppu_make :: proc(
+	allocator := context.allocator,
+	loc := #caller_location,
+) -> (
+	ppu: PPU,
+	error: runtime.Allocator_Error,
+) {
+	ppu_palette_size := 32
+	ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
+
+	return
+}
+
+ppu_delete :: proc(
+	ppu: PPU,
+	allocator := context.allocator,
+	loc := #caller_location,
+) -> runtime.Allocator_Error {
+	delete(ppu.palette) or_return
+
+	return nil
 }
 
 @(require_results)

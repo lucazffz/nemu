@@ -1,8 +1,5 @@
 package emulator
 
-// g_console: ^Console
-
-import "../utils"
 import "base:runtime"
 import "core:fmt"
 import "core:strings"
@@ -10,6 +7,7 @@ import "core:strings"
 ASSETS_DIR_PATH :: #directory + "assets/"
 
 CPU_CLK_FREQUENCY :: 1789773.0
+KB :: 1024 // one kibibyte
 
 Console :: struct {
 	cpu:         CPU,
@@ -25,17 +23,6 @@ Console :: struct {
 	dma:         DMA,
 }
 
-CPU_RAM_INTERVAL :: utils.Interval(u16){0x0000, 0x1fff, .Closed} // 2KB ram mirrored 4 times
-
-// given in ppu address space
-PPU_PATTERN_TABLE_INTERVAL :: utils.Interval(u16){0x0000, 0x1fff, .Closed}
-PPU_VRAM_INTERVAL :: utils.Interval(u16){0x2000, 0x2fff, .Closed}
-// $3000 - $3eff is unused
-PPU_PALLETTE_RAM_INTERVAL :: utils.Interval(u16){0x3f00, 0x3f1f, .Closed}
-
-// seperate own address space
-PPU_OAM_INTERVAL :: utils.Interval(u8){0x00, 0xff, .Closed}
-
 // allocate memory for console
 // will not initialize default values, use console_init
 @(require_results)
@@ -47,19 +34,17 @@ console_make :: proc(
 	console: ^Console,
 	err: runtime.Allocator_Error,
 ) #optional_allocator_error {
-	// dont check error, know that intervals are closed
-	ppu_palette_size := utils.interval_size(PPU_PALLETTE_RAM_INTERVAL)
-	cpu_ram_size := utils.interval_size(CPU_RAM_INTERVAL)
-
+	cpu_ram_size := 2 * KB
 	console = new(Console, allocator, loc) or_return
 
+	// cpu doesnt need any allocation
 	console.apu = apu_make(allocator, loc) or_return
+	console.ppu = ppu_make(allocator, loc) or_return
 
-	console.palette = palette.? or_else palette_make_default()
+	console.palette = palette.? or_else palette_make_default(allocator, loc) or_return
 
 	// pattern table and nametable are stored in cartridge (mapper) so
 	// dont need to allocate them here
-	console.ppu.palette = make_slice([]u8, ppu_palette_size, allocator, loc) or_return
 	console.ram = make_slice([]u8, cpu_ram_size, allocator, loc) or_return
 
 
@@ -73,9 +58,9 @@ console_delete :: proc(
 	loc := #caller_location,
 ) -> runtime.Allocator_Error {
 	apu_delete(console.apu, allocator, loc) or_return
+	ppu_delete(console.ppu, allocator, loc) or_return
 	delete_slice(console.ram, allocator, loc) or_return
-	delete_slice(console.ppu.palette, allocator, loc) or_return
-	palette_delete(console.palette)
+	palette_delete(console.palette, allocator, loc) or_return
 	cartridge_delete(console.cartridge)
 
 	free(console, allocator, loc) or_return
@@ -90,11 +75,6 @@ console_set_program_counter :: proc(console: ^Console, address: u16) {
 console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartridge) {
 	c: Console
 
-	c.cpu.sp = 0xfd
-	c.cpu.pc = 0xc000
-	c.cpu.status = {.IF}
-
-
 	// reassign pointers
 	c.ram = console.ram
 	c.ppu.palette = console.ppu.palette
@@ -106,11 +86,11 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 		mixing_stratergy = APU_Mixing_Linear_Approximation{1, 1, 1, 1, 1},
 	}
 
+	cpu_initialize(&c.cpu)
 	dma_initialize(&c.dma)
 	apu_initialize(&c.apu, 44100, apu_opts)
 
 	console^ = c
-	// g_console = console
 }
 
 

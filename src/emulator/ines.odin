@@ -74,6 +74,7 @@ iNES_Info :: struct {
 	file_variant: iNES_File_Variant,
 }
 
+@(require_results)
 ines_check_compatability :: proc(info: iNES_Info) -> Maybe(Error) {
 	h := info.header
 	if !slice.contains(SUPPORTED_MAPPERS, h.mapper_number) {
@@ -104,6 +105,7 @@ ines_check_compatability :: proc(info: iNES_Info) -> Maybe(Error) {
 	return nil
 }
 
+@(require_results)
 ines_check_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
 	mapper := mapper_make_from_number(info.header.mapper_number, info)
 
@@ -147,7 +149,7 @@ Default Expansion Device:     %d`
 		h.mapper_number,
 		h.submapper_number,
 		h.nametable_arrangement,
-		// bool_to_str(h.alternative_nametable_layout),
+		bool_to_str(h.alternative_nametable_layout),
 		h.tv_system,
 		h.console_type,
 		h.cpu_ppu_timing_mode,
@@ -177,12 +179,28 @@ Default Expansion Device:     %d`
 	}
 }
 
+@(require_results)
 ines_get_info :: proc(ines: NES20) -> iNES_Info {
 	return iNES_Info{header = ines.header, file_variant = ines.file_variant}
 }
 
+/*
+Parse bytes into iNES 2.0 format (backwards compatible with iNES 1.0)
+
+Neither the integrity or compatability of the iNES data is checked. To verify that, use
+`ines_check_integrity` and `ines_check_compatability` respecitvely.
+
+`ines` will **NOT** take ownership over `data`.
+
+Inputs:
+- data: The raw data to parse (presumably read from a .nes file)
+
+Returns:
+- ines: The parsed data
+- ok: Weather or not `data` could be parsed into `NES20`
+*/
 @(require_results)
-ines_get_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_ok {
+ines_parse_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_ok {
 	if ok = ines_is_nes_file_format(data); !ok do return
 
 	variant := ines_determine_format_variant_from_bytes(data)

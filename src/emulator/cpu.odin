@@ -180,6 +180,16 @@ Instruction :: struct {
 }
 
 
+cpu_initialize :: proc(cpu: ^CPU) {
+	c := CPU{}
+
+	c.sp = 0xfd
+	c.pc = 0xc000
+	c.status = {.IF}
+
+	cpu^ = c
+}
+
 @(require_results)
 cpu_get_instruction_from_opcode :: proc(opcode: u8) -> Instruction {
 	return {
@@ -242,8 +252,10 @@ cpu_get_last_executed_cycle_type :: proc(cpu: CPU) -> Cycle_Type {
 /*
 Executes a single CPU cycle
 
+The illegal instructions ANE, LXA, ALR, ARR, ANC and ANC2 are not supported.
+
 If an hardware-interrupt is set, the interurpt will be handled instead.
-The interrupt will be cleared (set to Hardware_Interrupt.None) automatically.
+The interrupt will be cleared (set to `Interrupt.None`) automatically.
 
 **Will continue execution on all non-fatal errors**
 
@@ -280,7 +292,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 		instr := cpu_get_instruction_from_opcode(opcode)
 
 		// handle_interrupt and execute_instruction are mutually exclusive
-		// meaning both will never be executed in the same procedure call
+		// meaning both will never be executed in the same procedure call.
 		switch console.cpu.interrupt {
 		case .Reset:
 			handle_interrupt(console)
@@ -307,11 +319,10 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 	return
 
 	handle_interrupt :: proc(console: ^Console) {
-		// the pushed PC is expected to point to the next
-		// instruction to be executed
-		// interrupt priority from higest to lowest: reset, BRK, NMI, IRQ
+		// The pushed PC is expected to point to the next
+		// instruction to be executed.
+		// Interrupt priority from higest to lowest: reset, BRK, NMI, IRQ
 		// @todo handle interrupt hijacking
-
 		defer {
 			console.cpu.stall_count = INTERRUPT_CYCLE_COUNT - 1
 			console.cpu.current = console.cpu.interrupt
@@ -326,7 +337,6 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			assert(e == nil, "should always be able to read from $FFFC, $FFFD")
 			console.cpu.pc = (u16(hi) << 8 | u16(lo))
 		case .NMI:
-			// if instr.type == .BRK do return true
 			pc_to_push := console.cpu.pc
 			stack_push(console, u8(pc_to_push >> 8))
 			stack_push(console, u8(pc_to_push))
@@ -341,8 +351,6 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			console.cpu.status += {.IF}
 			console.cpu.pc = (u16(hi) << 8) | u16(lo)
 		case .IRQ:
-			// if instr.type == .BRK do return true
-			// if .IF in console.cpu.status do return true
 			// same as for NMI only different interrupt vector
 			pc_to_push := console.cpu.pc
 			stack_push(console, u8(pc_to_push >> 8))
@@ -416,7 +424,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			console.cpu.status -= {.CF, .VF}
 			if u16(a) + u16(val) + u16(c) > 0xff do console.cpu.status += {.CF}
 			result := a + val + u8(c)
-			// @note the signed overflow could be calculated more gracefully
+			// @note The signed overflow could be calculated more gracefully.
 			// (a & 0x80) == (b & 0x80): are sign bits of a and b are the same
 			// (result & 0x80) != (a & 0x80): is sign bit of the result is
 			// different from the sign bit of the original numbers
@@ -880,9 +888,9 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 	}
 
 	stack_push :: proc(console: ^Console, data: u8) {
-		// the stack pointer will wraparound on overflow and underflow
+		// The stack pointer will wraparound on overflow and underflow
 		// so its always contained within addresses $0100-01ff, a write
-		// error cannot occur here
+		// error cannot occur here.
 		address := PAGE_1_BASE_ADDRESS + u16(console.cpu.sp)
 		e := console_write_to_address(console, address, data)
 		assert(e == nil, "SP should never be outside of range $0100-$01FF")
@@ -892,9 +900,9 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 
 	@(require_results)
 	stack_pull :: proc(console: ^Console) -> u8 {
-		// the stack pointer will wraparound on overflow and underflow
+		// The stack pointer will wraparound on overflow and underflow
 		// so its always contained within addresses $0100-01ff, a write
-		// error cannot occur here
+		// error cannot occur here.
 		console.cpu.sp += 1
 		address := PAGE_1_BASE_ADDRESS + u16(console.cpu.sp)
 		data, e := console_read_from_address(console, address)
@@ -914,7 +922,7 @@ get_instruction_operand_address :: proc(
 	page_crossed: bool,
 	err: Maybe(Error),
 ) {
-	// system is little endian so low byte is stored first in memory
+	// System is little endian so low byte is stored first in memory.
 	cpu := console.cpu
 	switch mode {
 	case .Immediate:
@@ -923,9 +931,9 @@ get_instruction_operand_address :: proc(
 		zp_addr := console_read_from_address(console, cpu.pc + 1) or_return
 		return_addr = u16(zp_addr)
 	case .Zeropage_X:
-		// overflow is ignored so 0x00ff (address) + 1 (X or Y) will cause
+		// Overflow is ignored so 0x00ff (address) + 1 (X or Y) will cause
 		// wraparound ensuring that the address is always contained within
-		// the zeropage
+		// the zeropage.
 		base_addr := console_read_from_address(console, cpu.pc + 1) or_return
 		return_addr = u16(base_addr + cpu.x) // emulate overflow properly
 	case .Zeropage_Y:
@@ -948,7 +956,7 @@ get_instruction_operand_address :: proc(
 		return_addr = base_addr + u16(cpu.y)
 		page_crossed = is_page_crossed(base_addr, return_addr)
 	case .Indirect:
-		// the infamous JMP indirect bug: if the low byte of the address vector
+		// The infamous JMP indirect bug: if the low byte of the address vector
 		// is 0xFF, due to incorrect wraparound the high byte is fetched
 		// from the start of the same page, not the next one.
 		lo_ptr := console_read_from_address(console, cpu.pc + 1) or_return
@@ -965,8 +973,6 @@ get_instruction_operand_address :: proc(
 		hi := console_read_from_address(console, u16(ptr + 1)) or_return
 		return_addr = (u16(hi) << 8) | u16(lo)
 	case .Zeropage_Indirect_Y:
-		// zp_ptr, lo, hi: u8
-		// error: Memory_Error
 		zp_ptr := console_read_from_address(console, cpu.pc + 1) or_return
 		lo := console_read_from_address(console, u16(zp_ptr)) or_return
 		hi := console_read_from_address(console, u16(zp_ptr + 1)) or_return
@@ -975,7 +981,6 @@ get_instruction_operand_address :: proc(
 		page_crossed = is_page_crossed(base_addr, return_addr)
 	case .Implied, .Accumulator, .Relative:
 	// Implied, Accumulator, and Relative modes don't use this function.
-	// panic(fmt.tprintf("tried to fetch instruction operand using address mode %v", mode))
 	}
 
 	return
@@ -1023,16 +1028,16 @@ status_flags_from_byte :: proc(byte: u8) -> (flags: bit_set[Processor_Status_Fla
 }
 
 
-instruction_to_string :: proc(instruction: Instruction) -> string {
-	i := instruction
-	return fmt.tprintf(
-		"(%s) B:%d C:%d PB:%d %7s %s",
-		i.type,
-		i.byte_size,
-		i.cycle_count,
-		i.page_boundary_extra_cycles,
-		i.category,
-		i.addressing_mode,
-	)
-}
+// instruction_to_string :: proc(instruction: Instruction) -> string {
+// 	i := instruction
+// 	return fmt.tprintf(
+// 		"(%s) B:%d C:%d PB:%d %7s %s",
+// 		i.type,
+// 		i.byte_size,
+// 		i.cycle_count,
+// 		i.page_boundary_extra_cycles,
+// 		i.category,
+// 		i.addressing_mode,
+// 	)
+// }
 

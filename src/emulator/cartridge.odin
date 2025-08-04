@@ -3,14 +3,13 @@ package emulator
 import "base:runtime"
 import "core:os"
 
-KB :: 1024 // one kibibyte
 
 Cartridge :: struct {
 	mapper:           ^Mapper,
 	mapper_number:    int,
 	submapper_number: int,
 	ines_info:        iNES_Info,
-	vram:             []u8,
+	vram:             []u8, // placed here for convenience
 	prg_rom:          []u8,
 	prg_ram:          []u8, // used as SRAM or WRAM
 	// Cartridges typically use either CHR RAM or CHR ROM, not both.
@@ -56,23 +55,24 @@ cartridge_persistant_ram_present :: proc(cartridge: Cartridge) -> bool {
 	return cartridge.battery_present && cartridge.prg_ram != nil
 }
 
-
 @(require_results)
 cartridge_make_from_filename :: proc(
 	filename: string,
+	allocator := context.allocator,
+	loc := #caller_location,
 ) -> (
 	cartridge: ^Cartridge,
 	err: Maybe(Error),
 ) {
-	rom, e := os.read_entire_file_or_err(filename)
+	data, e := os.read_entire_file_or_err(filename, allocator, loc)
 	if e != nil {
 		err = errorf(.IO_Error, "could not open file '%s', %v", filename, err, severity = .Fatal)
 		return
 	}
 
-	defer delete(rom)
+	defer delete(data)
 
-	ines, ok := ines_get_from_bytes(rom)
+	ines, ok := ines_parse_from_bytes(data)
 	if !ok {
 		err = errorf(.iNES_Error, "file '%s' is not an iNES file", filename, severity = .Fatal)
 		return
@@ -81,22 +81,28 @@ cartridge_make_from_filename :: proc(
 	info := ines_get_info(ines)
 	ines_check_compatability(info) or_return
 	ines_check_integrity(info) or_return
-	cartridge = cartridge_make_from_ines(ines)
+	cartridge = cartridge_make_from_ines(ines, allocator, loc) or_else panic("allocation error")
 
 	return
 }
 
+/*
+Makes a cartridge from a iNES struct
 
+Will **NOT** take ownership of the data sliced by `ines`. The data is
+instead copied.
+*/
 @(require_results)
 cartridge_make_from_ines :: proc(
 	ines: NES20,
 	allocator := context.allocator,
 	loc := #caller_location,
 ) -> (
-	c: ^Cartridge,
+	cartridge: ^Cartridge,
 	err: runtime.Allocator_Error,
 ) #optional_allocator_error {
-	c = new(Cartridge)
+	cartridge = new(Cartridge)
+	c := cartridge
 
 	c.vram = make_slice([]u8, 2 * KB, allocator, loc) or_return
 	c.mapper_number = ines.header.mapper_number
@@ -104,9 +110,10 @@ cartridge_make_from_ines :: proc(
 	c.battery_present = ines.header.battery_present
 	c.ines_info = ines_get_info(ines)
 
-	allocate_cartridge_memory(c, ines, allocator, loc) or_return
+	allocate_cartridge_memory(cartridge, ines, allocator, loc) or_return
 
-	// @todo copy nvram for PRG and CHR 
+	// Copying the data is not the most efficient but makes the ownership
+	// semantics simpler so keeping it like this for now.
 	copy_slice(c.prg_rom, ines.prg_rom)
 	copy_slice(c.chr_rom, ines.chr_rom)
 

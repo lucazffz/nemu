@@ -33,7 +33,6 @@ AUDIO_BUF_DEFAULT_SIZE :: 512
 
 default_context: runtime.Context
 
-
 Emulation_State :: enum {
 	Run,
 	Step_Cycle,
@@ -179,7 +178,6 @@ main :: proc() {
 		}
 	}
 }
-
 
 initialize :: proc() {
 	if cartridge, err := emu.cartridge_make_from_filename(g.rom_file_path); err != nil {
@@ -412,7 +410,7 @@ emulator_loop :: proc() {
 
 		if emulator_is_running() {
 			if sample_complete {
-				sample := emu.apu_get_sample(&g.emulator.console.apu)
+				sample := emu.apu_query_sample(&g.emulator.console.apu)
 				// log.info(sample)
 				chan.send(g.audio_chan, sample)
 			}
@@ -606,17 +604,24 @@ init_debug_ui :: proc() {
 		imgui.DockBuilderSetNodeSize(dockspace_id, viewport.Size)
 
 		dock_id_main := dockspace_id
-		dock_id_left: imgui.ID
-		imgui.DockBuilderSplitNode(
-			dock_id_main,
-			imgui.Dir.Left,
-			0.25,
-			&dock_id_left,
-			&dock_id_main,
-		)
+
+
+		dock_id_oam, dock_id_tables, dock_id_cpu, dock_id_ppu, dock_id_log: imgui.ID
+
+		imgui.DockBuilderSplitNode(dock_id_main, .Left, 0.75, &dock_id_main, &dock_id_oam)
+
+		imgui.DockBuilderSplitNode(dock_id_main, .Up, 0.7, &dock_id_main, &dock_id_log)
+		imgui.DockBuilderSplitNode(dock_id_main, .Right, 0.65, &dock_id_main, &dock_id_cpu)
+		imgui.DockBuilderSplitNode(dock_id_log, .Right, .65, &dock_id_log, &dock_id_tables)
+		imgui.DockBuilderSplitNode(dock_id_cpu, .Up, 0.30, &dock_id_cpu, &dock_id_ppu)
 
 		imgui.DockBuilderDockWindow("Game View", dock_id_main)
-		imgui.DockBuilderDockWindow("test", dock_id_left)
+		imgui.DockBuilderDockWindow("Log", dock_id_log)
+		imgui.DockBuilderDockWindow("Palette Table View", dock_id_tables)
+		imgui.DockBuilderDockWindow("Pattern Table View", dock_id_tables)
+		imgui.DockBuilderDockWindow("Object Attribute Memory View", dock_id_oam)
+		imgui.DockBuilderDockWindow("CPU State View", dock_id_cpu)
+		imgui.DockBuilderDockWindow("PPU State View", dock_id_ppu)
 
 		imgui.DockBuilderFinish(dockspace_id)
 	}
@@ -625,11 +630,11 @@ init_debug_ui :: proc() {
 render_debug_ui :: proc() {
 	@(static) show_game_view: bool = true
 	@(static) show_log: bool = true
-	@(static) show_pattern_tables: bool
-	@(static) show_cpu_state: bool
-	@(static) show_ppu_state: bool
-	@(static) show_palettes: bool
-	@(static) show_oam: bool
+	@(static) show_pattern_tables: bool = true
+	@(static) show_cpu_state: bool = true
+	@(static) show_ppu_state: bool = true
+	@(static) show_palettes: bool = true
+	@(static) show_oam: bool = true
 	@(static) show_break_in: bool
 	@(static) show_performance: bool
 	@(static) show_set_break_point: bool
@@ -1254,7 +1259,7 @@ render_debug_ui :: proc() {
 
 	if show_ppu_state {
 		p := g.emulator.console.ppu
-		imgui.Begin("PPU State", nil)
+		imgui.Begin("PPU State View", &show_ppu_state)
 		imgui.SeparatorText("PPUCTRL")
 		imgui.BeginGroup()
 		imgui.Text("nametable base address:           %d", p.ctrl.nametable_base_address)
