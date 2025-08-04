@@ -1,10 +1,7 @@
 package emulator
 
 import "base:runtime"
-import "core:log"
 import "core:math"
-import "core:os"
-import "core:slice"
 
 @(private = "file")
 apu_default_opts := APU_Options {
@@ -252,7 +249,7 @@ apu_execute_clk_cycle :: proc(apu: ^APU, dma: ^DMA) -> (sample_complete: bool, t
 
 	// update once per frame (cpu_cycle / 2 <=> ppu_cycle / 6)
 	if apu.cycle_count % 6 == 0 {
-		frame, half_frame, quater_frame := execute_frame_sequence(apu)
+		_, half_frame, quater_frame := execute_frame_sequence(apu)
 
 		pulse_channel_apu_clk(&apu.pulse1, quater_frame, half_frame)
 		pulse_channel_apu_clk(&apu.pulse2, quater_frame, half_frame)

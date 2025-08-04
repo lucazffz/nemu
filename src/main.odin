@@ -4,6 +4,7 @@ import "base:builtin"
 import "base:intrinsics"
 import "base:runtime"
 import "core:c"
+import "core:flags"
 import "core:fmt"
 import "core:log"
 import "core:math"
@@ -96,7 +97,30 @@ g: struct #no_copy {
 }
 
 main :: proc() {
-	console_logger := log.create_console_logger()
+	{
+		Options :: struct {
+			rom_path: string `args:"name=path,pos=0,required" usage:"Filepath to ROM."`,
+			pause:    bool `usage:"Start emulator paused."`,
+		}
+
+		opts: Options
+		style: flags.Parsing_Style = .Unix
+
+		flags.parse_or_exit(&opts, os.args, style)
+
+		g.rom_file_path = opts.rom_path
+
+		if opts.pause {
+			g.emulator.state = .Pause
+		} else {
+			g.emulator.state = .Run
+		}
+
+
+	}
+
+	opt: log.Options = {.Time} when !ODIN_DEBUG else log.Default_Console_Logger_Opts
+	console_logger := log.create_console_logger(opt = opt)
 	context.logger = console_logger
 
 	when ODIN_DEBUG {
@@ -109,15 +133,6 @@ main :: proc() {
 		}
 	}
 
-	if len(os.args) != 2 {
-		log.errorf(
-			"ERROR: Expected 1 argument of format 'nemu <rom file path>', got %d",
-			len(os.args) - 1,
-		)
-		os.exit(1)
-	}
-
-	g.rom_file_path = os.args[1]
 
 	initialize()
 
@@ -239,7 +254,6 @@ initialize :: proc() {
 	g.debug_ui.pattern_table_0_texture = rl.LoadTextureFromImage(pattern_table_0_img)
 	g.debug_ui.pattern_table_1_texture = rl.LoadTextureFromImage(pattern_table_1_img)
 
-	g.emulator.state = .Run
 
 	g.audio_chan, _ = chan.create_buffered(
 		chan.Chan(f64),
@@ -341,7 +355,6 @@ emulator_loop :: proc() {
 	limit_frame_time: bool
 	time_stamp: time.Time
 	frame_complete, instr_complete, sample_complete: bool
-	instr_count := 0
 
 	for {
 		if emulator_is_running() {

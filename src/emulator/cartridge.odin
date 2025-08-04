@@ -2,7 +2,6 @@ package emulator
 
 import "base:runtime"
 import "core:os"
-import "core:slice"
 
 KB :: 1024 // one kibibyte
 

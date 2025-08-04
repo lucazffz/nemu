@@ -26,7 +26,7 @@ mapper0_delete :: proc(mapper: ^Mapper) {
 
 @(private = "file")
 mapper0_verify_ines_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
-	h := info.header
+	// h := info.header
 
 	// if h.prg_ram_size != 2 * KB && h.prg_ram_size != 4 * KB && h.prg_ram_size != 0 {
 	// 	return errorf(

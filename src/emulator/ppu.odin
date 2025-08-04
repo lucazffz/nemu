@@ -1,7 +1,6 @@
 package emulator
 
 import "core:fmt"
-import "core:log"
 import "core:slice"
 
 // RGBA8 format

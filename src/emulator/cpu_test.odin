@@ -60,7 +60,10 @@ test_cpu :: proc(t: ^testing.T) {
 
 				return
 			} else {
-				if console.cpu.current_instruction.?.type == .JAM && complete do break
+				if instr, ok := console.cpu.current.(Instruction); ok {
+					if instr.type == .JAM && complete do break
+
+				}
 			}
 		}
 	}

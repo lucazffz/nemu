@@ -5,8 +5,6 @@ package emulator
 import "../utils"
 import "base:runtime"
 import "core:fmt"
-import "core:log"
-import "core:slice"
 import "core:strings"
 
 ASSETS_DIR_PATH :: #directory + "assets/"
@@ -125,7 +123,7 @@ console_execute_clk_cycle :: proc(
 	audio_sample_complete: bool,
 	err: Maybe(Error),
 ) {
-	trigger_nmi, trigger_irq, dmc_dma_transfer: bool
+	trigger_nmi, trigger_irq: bool
 
 	frame_complete, trigger_nmi = ppu_execute_clk_cycle(
 		&console.ppu,

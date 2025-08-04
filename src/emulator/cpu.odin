@@ -780,7 +780,7 @@ cpu_execute_clk_cycle :: proc(console: ^Console) -> (complete: bool, err: Maybe(
 			console.cpu.pc = start_pc
 			pc_incremented = true
 		case:
-			panic(fmt.tprintf("unhandled instruction: %v", instr.type))
+			fmt.panicf("unhandled instruction: %v", instr.type)
 		}
 
 		return

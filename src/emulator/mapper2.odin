@@ -27,7 +27,6 @@ mapper2_delete :: proc(mapper: ^Mapper) {
 
 @(private = "file")
 mapper2_verify_ines_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
-	h := info.header
 	return nil
 }
 
