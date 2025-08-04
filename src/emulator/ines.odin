@@ -5,37 +5,37 @@ import "core:slice"
 
 NES20_Header :: struct {
 	// all sizes are in units of bytes
-	prg_rom_size:             int,
-	prg_ram_size:             int,
-	prg_nvram_size:           int,
-	chr_rom_size:             int,
-	chr_ram_size:             int,
-	chr_nvram_size:           int,
-	misc_rom_size:            int,
-	mapper_number:            int,
-	submapper_number:         int,
-	nametable_arrangement:    Nametable_Arrangement,
-	battery_present:          bool,
-	trainer_present:          bool,
-	// alternative_nametable_layout: bool,
-	tv_system:                enum {
+	prg_rom_size:                 int,
+	prg_ram_size:                 int,
+	prg_nvram_size:               int,
+	chr_rom_size:                 int,
+	chr_ram_size:                 int,
+	chr_nvram_size:               int,
+	misc_rom_size:                int,
+	mapper_number:                int,
+	submapper_number:             int,
+	nametable_arrangement:        Nametable_Arrangement,
+	battery_present:              bool,
+	trainer_present:              bool,
+	alternative_nametable_layout: bool,
+	tv_system:                    enum {
 		NTSC,
 		PAL,
 	},
-	console_type:             union #no_nil {
+	console_type:                 union #no_nil {
 		Nintendo_Entertainment_System,
 		Nintendo_Vs_System,
 		Nintendo_Playchoice_10,
 		Extended_Console_Type,
 	},
-	cpu_ppu_timing_mode:      enum {
+	cpu_ppu_timing_mode:          enum {
 		RP2C02,
 		RP2C07,
 		Multiple_Region,
 		UA6538,
 	},
-	miscellaneous_roms_num:   int,
-	default_expansion_device: int,
+	miscellaneous_roms_num:       int,
+	default_expansion_device:     int,
 }
 
 NES20 :: struct {
@@ -50,7 +50,6 @@ NES20 :: struct {
 Nametable_Arrangement :: enum {
 	Vertical,
 	Horizontal,
-	Alternative_Layout,
 }
 
 Nintendo_Entertainment_System :: struct {
@@ -106,7 +105,7 @@ ines_check_compatability :: proc(info: iNES_Info) -> Maybe(Error) {
 }
 
 ines_check_integrity :: proc(info: iNES_Info) -> Maybe(Error) {
-	mapper := mapper_make_from_number(info.header.mapper_number, info.header.nametable_arrangement)
+	mapper := mapper_make_from_number(info.header.mapper_number, info)
 
 	defer mapper->delete()
 	return mapper.verify_ines_integrity(info)
@@ -215,14 +214,11 @@ ines_get_from_bytes :: proc(data: []byte) -> (ines: NES20, ok: bool) #optional_o
 		header.chr_rom_size = int((chr_rom_size_msb << 4) | chr_rom_size_lsb) * 8 * KB
 	}
 
-	if (data[6] & 0x08) == 1 {
-		header.nametable_arrangement = .Alternative_Layout
-	} else {
-		header.nametable_arrangement = (data[6] & 0x01) == 1 ? .Horizontal : .Vertical
-	}
 
+	header.nametable_arrangement = (data[6] & 0x01) == 1 ? .Horizontal : .Vertical
 	header.battery_present = (data[6] & 0x02) > 0
 	header.trainer_present = (data[6] & 0x04) > 0
+	header.alternative_nametable_layout = (data[6] & 0x08) == 1
 	header.mapper_number = int(
 		((data[8] & 0x0f) << 8) | (data[7] & 0xf0) | ((data[6] & 0xf0) >> 4),
 	)

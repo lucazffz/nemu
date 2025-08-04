@@ -6,10 +6,11 @@ Mapper3 :: struct {
 	bank_select: u8,
 }
 
-mapper3_make :: proc(nametable_arrangment: Nametable_Arrangement) -> ^Mapper3 {
+mapper3_make :: proc(info: iNES_Info) -> ^Mapper3 {
 	m := new(Mapper3)
 
-	m.mirroring = nametable_arrangement_to_mirroring(nametable_arrangment)
+	arrangement := info.header.nametable_arrangement
+	m.mirroring = nametable_arrangement_to_mirroring(arrangement)
 	m.m.write_to_address = mapper3_write_to_address
 	m.read_from_address = mapper3_read_from_address
 	m.verify_ines_integrity = mapper3_verify_ines_integrity

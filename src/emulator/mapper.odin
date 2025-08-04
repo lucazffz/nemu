@@ -10,21 +10,18 @@ Mapper :: struct {
 }
 
 
-mapper_make_from_number :: proc(
-	mapper_number: int,
-	nametable_arrangement: Nametable_Arrangement,
-) -> ^Mapper {
+mapper_make_from_number :: proc(mapper_number: int, info: iNES_Info) -> ^Mapper {
 	switch mapper_number {
 	case 0:
-		return &mapper0_make(nametable_arrangement).m
+		return &mapper0_make(info).m
 	case 1:
-		return &mapper1_make(nametable_arrangement).m
+		return &mapper1_make(info).m
 	case 2:
-		return &mapper2_make(nametable_arrangement).m
+		return &mapper2_make(info).m
 	case 3:
-		return &mapper3_make(nametable_arrangement).m
+		return &mapper3_make(info).m
 	case 4:
-		return &mapper4_make(nametable_arrangement).m
+		return &mapper4_make(info).m
 	case:
 		panic("mapper not supported")
 	}
@@ -33,7 +30,6 @@ mapper_make_from_number :: proc(
 @(require_results)
 nametable_arrangement_to_mirroring :: proc(
 	arrangement: Nametable_Arrangement,
-	alternative: Nametable_Mirroring = .Four_Screen,
 ) -> (
 	mirroring: Nametable_Mirroring,
 ) {
@@ -45,8 +41,6 @@ nametable_arrangement_to_mirroring :: proc(
 		mirroring = .Horizontal
 	case .Horizontal:
 		mirroring = .Vertical
-	case .Alternative_Layout:
-		mirroring = alternative
 	}
 
 	return

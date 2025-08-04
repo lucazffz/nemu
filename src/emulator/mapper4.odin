@@ -35,10 +35,16 @@ Mapper4 :: struct {
 	bank_select_regs:    [8]u8, // R0-R7
 }
 
-mapper4_make :: proc(nametable_arrangment: Nametable_Arrangement) -> ^Mapper4 {
+mapper4_make :: proc(info: iNES_Info) -> ^Mapper4 {
 	m := new(Mapper4)
 
-	m.mirroring = nametable_arrangement_to_mirroring(nametable_arrangment)
+	if info.header.alternative_nametable_layout {
+		m.mirroring = .Four_Screen
+	} else {
+		arrangement := info.header.nametable_arrangement
+		m.mirroring = nametable_arrangement_to_mirroring(arrangement)
+	}
+
 	m.write_to_address = mapper4_write_to_address
 	m.read_from_address = mapper4_read_from_address
 	m.verify_ines_integrity = mapper4_verify_ines_integrity
@@ -133,7 +139,7 @@ mapper4_write_to_address :: proc(
 
 		c.prg_ram[address - 0x6000] = data
 	case 0x8000 ..= 0xffff:
-		write_to_register_from_address(m, c, address, data)
+		err = write_to_register_from_address(m, c, address, data)
 	case:
 		panic("address not handled by mapper 4")
 	}
@@ -197,8 +203,15 @@ mapper4_read_from_address :: proc(
 	return
 }
 
-@(private = "file")
-write_to_register_from_address :: proc(m: ^Mapper4, c: ^Cartridge, address: u16, data: u8) {
+@(require_results, private = "file")
+write_to_register_from_address :: proc(
+	m: ^Mapper4,
+	c: ^Cartridge,
+	address: u16,
+	data: u8,
+) -> (
+	err: Maybe(Error),
+) {
 	is_address_even := address & 0x0001 == 0
 	switch address {
 	case 0x8000 ..< 0xa000:
@@ -231,6 +244,15 @@ write_to_register_from_address :: proc(m: ^Mapper4, c: ^Cartridge, address: u16,
 				} else {
 					m.mirroring = .Horizontal
 				}
+			} else {
+				err = errorf(
+					.Memory_Error,
+					"cannot write '%02X' to $%04X, alternative nametable arrangement is used (Mapper 4)",
+					data,
+					address,
+					severity = .Warning,
+				)
+
 			}
 		} else {
 			m.prg_ram_protect_reg = auto_cast data
@@ -254,6 +276,8 @@ write_to_register_from_address :: proc(m: ^Mapper4, c: ^Cartridge, address: u16,
 	case:
 		panic("address not within registers space")
 	}
+
+	return
 }
 
 @(require_results, private = "file")

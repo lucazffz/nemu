@@ -20,10 +20,7 @@ Cartridge :: struct {
 	// arise where they need to be treated seperately.
 	chr_rom:          []u8,
 	chr_ram:          []u8,
-	// prg_nvram:        []u8,
-	// chr_nvram:        []u8,
 	battery_present:  bool,
-	// mirroring:        Nametable_Mirroring,
 	trigger_irq:      bool,
 }
 
@@ -114,7 +111,8 @@ cartridge_make_from_ines :: proc(
 	copy_slice(c.prg_rom, ines.prg_rom)
 	copy_slice(c.chr_rom, ines.chr_rom)
 
-	c.mapper = mapper_make_from_number(c.mapper_number, ines.header.nametable_arrangement)
+	info := ines_get_info(ines)
+	c.mapper = mapper_make_from_number(c.mapper_number, info)
 
 	return
 

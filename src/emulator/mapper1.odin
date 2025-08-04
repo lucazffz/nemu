@@ -26,11 +26,12 @@ Mapper1 :: struct {
 	mirroring:           Nametable_Mirroring,
 }
 
-mapper1_make :: proc(nametable_arrangement: Nametable_Arrangement) -> ^Mapper1 {
+mapper1_make :: proc(info: iNES_Info) -> ^Mapper1 {
 	m := new(Mapper1)
 	reset(m)
 
-	m.mirroring = nametable_arrangement_to_mirroring(nametable_arrangement)
+	arrangement := info.header.nametable_arrangement
+	m.mirroring = nametable_arrangement_to_mirroring(arrangement)
 	m.write_to_address = mapper1_write_to_address
 	m.read_from_address = mapper1_read_from_address
 	m.verify_ines_integrity = mapper1_verify_ines_integrity
