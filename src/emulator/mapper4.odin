@@ -64,25 +64,31 @@ mapper4_write_to_address :: proc(
 ) {
 	m := cast(^Mapper4)mapper
 
-	update_interrupt(m, address)
-
 	switch address {
-	case 0x0000 ..< 0x2000:
-		if mem, read_only := cartridge_get_chr_mem(c); !read_only {
-			offset := map_address_to_chr_mem_offset(m^, address)
-			mem[offset] = data
+	case 0x0000 ..< 0x3f00:
+		if address < 0x2000 {
+			// $0000-$1FFF
+			if mem, read_only := cartridge_get_chr_mem(c); !read_only {
+				offset := map_address_to_chr_mem_offset(m^, address)
+				mem[offset] = data
+			} else {
+				err = errorf(
+					.Memory_Error,
+					"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
+					data,
+					address,
+					severity = .Warning,
+				)
+			}
 		} else {
-			err = errorf(
-				.Memory_Error,
-				"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
-				data,
-				address,
-				severity = .Warning,
-			)
+			// $2000-$3EFF
+			addr := get_nametable_mirror_address(address, c.mirroring)
+			c.vram[addr - 0x2000] = data
 		}
-	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
-		c.vram[addr - 0x2000] = data
+
+		if a12_query_on_rising_edge(m, address) {
+			c.trigger_irq = update_interrupt(m, address)
+		}
 	case 0x6000 ..< 0x8000:
 		if c.prg_ram == nil {
 			err = errorf(
@@ -141,16 +147,22 @@ mapper4_read_from_address :: proc(
 ) {
 	m := cast(^Mapper4)mapper
 
-	update_interrupt(m, address)
-
 	switch address {
-	case 0x0000 ..< 0x2000:
-		offset := map_address_to_chr_mem_offset(m^, address)
-		mem := cartridge_get_chr_mem(c)
-		data = mem[offset]
-	case 0x2000 ..= 0x3eff:
-		addr := get_nametable_mirror_address(address, c.mirroring)
-		data = c.vram[addr - 0x2000]
+	case 0x0000 ..< 0x3f00:
+		if address < 0x2000 {
+			// $0000-$1FFF
+			offset := map_address_to_chr_mem_offset(m^, address)
+			mem := cartridge_get_chr_mem(c)
+			data = mem[offset]
+		} else {
+			// $2000-$3EFF
+			addr := get_nametable_mirror_address(address, c.mirroring)
+			data = c.vram[addr - 0x2000]
+		}
+
+		if a12_query_on_rising_edge(m, address) {
+			c.trigger_irq = update_interrupt(m, address)
+		}
 	case 0x6000 ..< 0x8000:
 		if c.prg_ram == nil {
 			err = errorf(
@@ -240,32 +252,32 @@ write_to_register_from_address :: proc(m: ^Mapper4, c: ^Cartridge, address: u16,
 	}
 }
 
-@(private = "file")
-update_interrupt :: proc(m: ^Mapper4, address: u16) -> (trigger_irq: bool) {
+@(require_results, private = "file")
+a12_query_on_rising_edge :: proc(m: ^Mapper4, address: u16) -> bool {
 	a12_high := address & 0x1000 > 0
-	// if !a12_high {
-	// 	m.a12_low_counter += 1
-	// }
+	defer m.a12_high = a12_high
 
 	if !m.a12_high && a12_high {
-		// A12 rising edge, 0 -> 1
-		if m.interrupt_counter == 0 || m.interrupt_reload {
-			m.interrupt_reload = false
-			m.interrupt_counter = m.irq_latch_reg
-		} else {
-			m.interrupt_counter -= 1
-		}
-
-		if m.interrupt_counter == 0 && m.interrupt_enable {
-			// g_console.cpu.interrupt = .IRQ
-			// if g_console.cpu.interrupt != .NMI {
-			// }
-			trigger_irq = true
-		}
-
+		return true
 	}
 
-	m.a12_high = a12_high
+	return false
+
+}
+
+@(require_results, private = "file")
+update_interrupt :: proc(m: ^Mapper4, address: u16) -> (trigger_irq: bool) {
+	// A12 rising edge, 0 -> 1
+	if m.interrupt_counter == 0 || m.interrupt_reload {
+		m.interrupt_reload = false
+		m.interrupt_counter = m.irq_latch_reg
+	} else {
+		m.interrupt_counter -= 1
+	}
+
+	if m.interrupt_counter == 0 && m.interrupt_enable {
+		trigger_irq = true
+	}
 
 	return
 }

@@ -1,6 +1,6 @@
 package emulator
 
-g_console: ^Console
+// g_console: ^Console
 
 import "../utils"
 import "base:runtime"
@@ -112,7 +112,7 @@ console_initialize_with_cartridge :: proc(console: ^Console, cartridge: ^Cartrid
 	apu_initialize(&c.apu, 44100, apu_opts)
 
 	console^ = c
-	g_console = console
+	// g_console = console
 }
 
 
@@ -135,6 +135,10 @@ console_execute_clk_cycle :: proc(
 	)
 
 	audio_sample_complete, trigger_irq = apu_execute_clk_cycle(&console.apu, &console.dma)
+
+	if cartridge_query_trigger_irq(console.cartridge) {
+		trigger_irq = true
+	}
 
 	if trigger_nmi {
 		console.cpu.interrupt = .NMI

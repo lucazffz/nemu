@@ -24,6 +24,7 @@ Cartridge :: struct {
 	// chr_nvram:        []u8,
 	battery_present:  bool,
 	mirroring:        Nametable_Mirroring,
+	trigger_irq:      bool,
 }
 
 Nametable_Mirroring :: enum {
@@ -32,6 +33,12 @@ Nametable_Mirroring :: enum {
 	Single_Screen_A,
 	Single_Screen_B,
 	Four_Screen,
+}
+
+cartridge_query_trigger_irq :: proc(cartridge: ^Cartridge) -> bool {
+	trigger_irq := cartridge.trigger_irq
+	cartridge.trigger_irq = false
+	return trigger_irq
 }
 
 @(require_results)
