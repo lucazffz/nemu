@@ -1,5 +1,12 @@
 package emulator
 
+// Implementation of MMC3, MMC6 is not supported.
+//
+// @note The IRQ counter is only updated on write/read to mapper
+// which probably does not include all times A12 is on rising edge.
+// It is not updated on write/read to VRAM since that is internal to the
+// PPU (not actually part of cartridge) and does not use address lines. 
+// See https://www.nesdev.org/wiki/MMC1 for documentation.
 Mapper4 :: struct {
 	using m:             Mapper,
 	bank_select_reg:     bit_field u8 {
@@ -65,30 +72,26 @@ mapper4_write_to_address :: proc(
 	m := cast(^Mapper4)mapper
 
 	switch address {
-	case 0x0000 ..< 0x3f00:
-		if address < 0x2000 {
-			// $0000-$1FFF
-			if mem, read_only := cartridge_get_chr_mem(c); !read_only {
-				offset := map_address_to_chr_mem_offset(m^, address)
-				mem[offset] = data
-			} else {
-				err = errorf(
-					.Memory_Error,
-					"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
-					data,
-					address,
-					severity = .Warning,
-				)
-			}
+	case 0x0000 ..< 0x2000:
+		if mem, read_only := cartridge_get_chr_mem(c); !read_only {
+			offset := map_address_to_chr_mem_offset(m^, address)
+			mem[offset] = data
 		} else {
-			// $2000-$3EFF
-			addr := get_nametable_mirror_address(address, c.mirroring)
-			c.vram[addr - 0x2000] = data
+			err = errorf(
+				.Memory_Error,
+				"cannot write '%02X' to $%04X (read-only $0000-$1FFF)",
+				data,
+				address,
+				severity = .Warning,
+			)
 		}
 
 		if a12_query_on_rising_edge(m, address) {
 			c.trigger_irq = update_interrupt(m, address)
 		}
+	case 0x2000 ..< 0x3f00:
+		addr := get_nametable_mirror_address(address, c.mirroring)
+		c.vram[addr - 0x2000] = data
 	case 0x6000 ..< 0x8000:
 		if c.prg_ram == nil {
 			err = errorf(
@@ -148,21 +151,17 @@ mapper4_read_from_address :: proc(
 	m := cast(^Mapper4)mapper
 
 	switch address {
-	case 0x0000 ..< 0x3f00:
-		if address < 0x2000 {
-			// $0000-$1FFF
-			offset := map_address_to_chr_mem_offset(m^, address)
-			mem := cartridge_get_chr_mem(c)
-			data = mem[offset]
-		} else {
-			// $2000-$3EFF
-			addr := get_nametable_mirror_address(address, c.mirroring)
-			data = c.vram[addr - 0x2000]
-		}
+	case 0x0000 ..< 0x2000:
+		offset := map_address_to_chr_mem_offset(m^, address)
+		mem := cartridge_get_chr_mem(c)
+		data = mem[offset]
 
 		if a12_query_on_rising_edge(m, address) {
 			c.trigger_irq = update_interrupt(m, address)
 		}
+	case 0x2000 ..< 0x3f00:
+		addr := get_nametable_mirror_address(address, c.mirroring)
+		data = c.vram[addr - 0x2000]
 	case 0x6000 ..< 0x8000:
 		if c.prg_ram == nil {
 			err = errorf(
