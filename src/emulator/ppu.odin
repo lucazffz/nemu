@@ -4,12 +4,6 @@ import "base:runtime"
 import "core:fmt"
 import "core:slice"
 
-COLOR_BLACK :: Color{0, 0, 0, 255}
-
-ppu_default_opts := PPU_Options {
-	left_margin_color = COLOR_BLACK,
-}
-
 PPU :: struct {
 	// Miscellaneous settings ($2000 write-only)
 	// mmio_register_bank:     struct {
@@ -74,7 +68,6 @@ PPU :: struct {
 	palette:                    []u8,
 	is_rendering:               bool, // active during scanlines -1 - 239
 	// frame_complete:         bool,
-	opts:                       PPU_Options,
 	frame_count:                u64,
 	cycle:                      int,
 	scanline:                   int,
@@ -128,17 +121,14 @@ Sprite :: struct {
 	x_pos:      u8,
 }
 
-PPU_Options :: struct {
-	left_margin_color: Color,
-}
-
 // Restore state as after power up.
-ppu_initialize :: proc(ppu: ^PPU, opts := ppu_default_opts) {
+ppu_initialize :: proc(ppu: ^PPU) {
 	p := PPU{}
 
-	p.opts = opts
 
 	p.palette = ppu.palette
+
+	p.scanline = -1
 
 	ppu^ = p
 }
@@ -799,32 +789,33 @@ ppu_execute_clk_cycle :: proc(
 
 	write_to_buffer: if buffer, ok := pixel_buffer.?; ok {
 		if ppu.cycle < 256 && ppu.scanline >= 0 && ppu.scanline < 240 {
-			use_default_color: bool = false
+			use_backdrop_color: bool = false
 
 			if ppu.cycle < 8 {
 				if !ppu.mask.show_background_in_margin && pixel_source == .Background {
-					use_default_color = true
+					use_backdrop_color = true
 				}
 
 				if !ppu.mask.show_sprites_in_margin && pixel_source == .Foreground {
-					use_default_color = true
+					use_backdrop_color = true
 				}
 			}
 
 			if !ppu.mask.enable_background_rendering && pixel_source == .Background {
-				use_default_color = true
+				use_backdrop_color = true
 			}
 
 			if !ppu.mask.enable_sprite_rendering && pixel_source == .Foreground {
-				use_default_color = true
+				use_backdrop_color = true
 			}
 
 			c: Color
-			if use_default_color {
-				c = ppu.opts.left_margin_color
-			} else {
-				c = ppu_get_color_from_palette(ppu, palette, palette_idx, pixel)
+			if use_backdrop_color {
+				palette_idx = 0
+				pixel = 0
 			}
+
+			c = ppu_get_color_from_palette(ppu, palette, palette_idx, pixel)
 
 			buffer[ppu.scanline * 256 + ppu.cycle] = c
 		}
