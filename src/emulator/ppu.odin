@@ -572,7 +572,7 @@ ppu_execute_clk_cycle :: proc(
 
 	// --- Sprite rendering shit ---
 
-	if ppu.scanline >= -1 && ppu.scanline < 340 {
+	if ppu.scanline >= -1 && ppu.scanline < 240 {
 		// @Note Sprite rendering does not follow the NES hardware timing.
 		// Everything is calculated during the first non-visible cycle of each scanline.
 		// This may cause compatability issues with certain games.
