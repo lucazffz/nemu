@@ -33,7 +33,7 @@ Run the build script (support for Windows and Linux).
 python build.py
 ```
 
-The executable will now be accessible within the created build directory. The executable name is based on your specific platform and system architecture (ex. nemu_linux_x86-64_release.bin).
+The executable will now be accessible within the created build directory. The executable name is based on your specific platform and system architecture (e.g. nemu_linux_x86-64_release.bin).
 
 **Note**: While the emulator officially only supports Windows and Linux, there is no reason why it would not work on macOS. However, to build it on macOS, you would need to use the Odin compiler directly and not the Python build script. This should be as simple as executing `odin build ./src -o:speed -out:nemu -ignore-warnigs`.
 
