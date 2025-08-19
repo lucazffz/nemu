@@ -15,6 +15,8 @@ You first need to install the [Odin compiler](https://odin-lang.org/docs/install
 
 Nemu is using [Raylib](https://www.raylib.com/) as its media layer, which is statically linked into the binary. It is included within Odin's vendor collection, so no need to install it separately.
 
+**Nix**: If you are using Nix, just run `nix develop` after cloning the repository to enter a development environment with all dependencies installed.
+
 Clone the repository and enter the directory.
 ```
 git clone https://github.com/lucazffz/nemu
@@ -28,9 +30,7 @@ python build.py
 
 The executable will now be accessible within the created build directory. The executable name is based on your specific platform and system architecture (ex. nemu_linux_x86-64_release.bin).
 
-**Nix**: If you are using Nix, just run `nix develop` to enter a development environment with all dependencies installed.
-
-**NOTE**: While the emulator officially only supports Windows and Linux, there is no reason why it would not work on macOS. However, to build it on macOS, you would need to use the Odin compiler directly and not the Python build script. This should be as simple as executing `odin build ./src -o:speed -out:nemu -ignore-warnigs`.
+**Note**: While the emulator officially only supports Windows and Linux, there is no reason why it would not work on macOS. However, to build it on macOS, you would need to use the Odin compiler directly and not the Python build script. This should be as simple as executing `odin build ./src -o:speed -out:nemu -ignore-warnigs`.
 
 # Usage
 Nemu includes a small terminal interface. To run a ROM, simply execute:
