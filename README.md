@@ -16,7 +16,7 @@ To see which ROMs are playable, refer to this list: [NES Mapper List](https://tu
 ![](./resources/zelda_img.jpg)   | ![](./resources/ice_climber_img.jpg)  | ![](./resources/super_mario_bros_img.jpg)       
 
 # Installation
-You first need to install the [Odin compiler](https://odin-lang.org/docs/install/) together [Python interpreter](https://www.python.org/downloads/). Check your specific package manager. 
+You first need to install the [Odin compiler](https://odin-lang.org/docs/install/) together with the [Python interpreter](https://www.python.org/downloads/). Check your specific package manager. 
 
 Nemu is using [Raylib](https://www.raylib.com/) as its media layer, which is statically linked into the binary. It is included within Odin's vendor collection, so no need to install it separately.
 
@@ -74,7 +74,7 @@ There are plenty of known issues regarding emulation accuracy as Nemu is current
 * The APU pulse channel won't stop playing in the Super Mario 3 menu screen
 
 # Documentation
-This project was made possible by the tremendous community effort of documenting the NES hardware behavior. Here are some great resources:
+This project was made possible by the tremendous community-driven effort of documenting the NES hardware behavior. Here are some great resources:
 
 * [Nes Reference Guide (Wiki)](https://www.nesdev.org/wiki/NES_reference_guide)
 * [6502 CPU Reference](https://www.cpcwiki.eu/index.php/MOS_6502)
