@@ -15,7 +15,7 @@ You first need to install the [Odin compiler](https://odin-lang.org/docs/install
 
 Nemu is using [Raylib](https://www.raylib.com/) as its media layer, which is statically linked into the binary. It is included within Odin's vendor collection, so no need to install it separately.
 
-**Nix**: If you are using Nix, just run `nix develop` after cloning the repository to enter a development environment with all dependencies installed.
+**Nix**: If you are using Nix, just run `nix develop` after cloning the repository to enter a development environment with all dependencies installed. 
 
 Clone the repository and enter the directory.
 ```
