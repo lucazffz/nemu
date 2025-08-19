@@ -10,6 +10,11 @@ It has support for the following mappers:
 
 To see which ROMs are playable, refer to this list: [NES Mapper List](https://tuxnes.sourceforge.net/nesmapper.txt)
 
+# Screenshots
+![](./resources/metroid_img.jpg) | ![](./resources/contra_img.jpg)        | ![](./resources/castlevania_img.jpg)    
+:-------------------------------:|:--------------------------------------:|-----------------------------------------: 
+![](./resources/zelda_img.jpg)   | ![](./resources/ice_climbers_img.jpg)  | ![](./resources/super_mario_bros_img.jpg)       
+
 # Installation
 You first need to install the [Odin compiler](https://odin-lang.org/docs/install/) together [Python interpreter](https://www.python.org/downloads/). Check your specific package manager. 
 
